@@ -1,0 +1,102 @@
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+*.code-workspace
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# Django
+*.log
+local_settings.py
+db.sqlite3
+db.sqlite3-journal
+
+# Testing
+.coverage
+.pytest_cache/
+htmlcov/
+.tox/
+
+# IDE runtime data
+.DS_Store
+Thumbs.db
+
+# Project logs
+/logs/
+
+# Project simulation outputs (temporary data)
+/saves/
+llm_smartmeter_profiles.json
+!LLM/smartmeter/llm_smartmeter_profiles.json
+**/*_case_output/
+/LLM/smartmeter/*/*_output/
+/devices/
+
+# Generated LLM runtime artifacts that are too large for a regular repository
+**/*_output_best_k/llm_runtime_input.tsv
+**/*_output_human_k/llm_runtime_input.tsv
+**/*_output_best_k/llm_runtime_cycles.pkl
+**/*_output_human_k/llm_runtime_cycles.pkl
+
+# Obsolete output generated with the wrong Coffee Machine input
+/LLM/smartmeter/Coffee_machine/smartmeter_sm_wm_output_best_k/
+
+# Local hardware/user configuration
+/sensor_map.json
+
+# User-created scenario files
+/houses/
+
+# Local scratch / archives
+/ignora/
+*.zip
+.lgd-*
+
+# LaTeX generated files
+latex/Simulator/
+latex/**/*.aux
+latex/**/*.bcf
+latex/**/*.bbl
+latex/**/*.blg
+latex/**/*.fdb_latexmk
+latex/**/*.fls
+latex/**/*.lof
+latex/**/*.lot
+latex/**/*.out
+latex/**/*.run.xml
+latex/**/*.synctex.gz
+latex/**/*.toc
+devices/dht_t2.csv

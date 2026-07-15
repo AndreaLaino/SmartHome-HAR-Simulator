@@ -1,0 +1,138 @@
+{
+  "coffee_machine": {
+    "cycle": {
+      "threshold_watts": 60,
+      "min_duration_minutes": 1,
+      "min_off_minutes": 5,
+      "max_idle_gap_minutes": 5,
+      "tail_samples": 5,
+      "max_analysis_minutes": 10,
+      "force_rebuild_pkl": false
+    },
+    "features": {
+      "target_len": 200,
+      "curve_norm_mode": "zscore"
+    },
+    "selection": {
+      "max_duration_minutes": 15,
+      "min_peak_watts": 500,
+      "min_mean_watts": 400
+    },
+    "hybrid": {
+      "alpha": 1.2,
+      "beta": 0.8
+    },
+    "k": {
+      "search_max": 60,
+      "human_k_min": 20,
+      "human_max_largest_cluster_frac": 0.55,
+      "human_max_singleton_frac": 0.1,
+      "human_min_cluster_size": 3
+    }
+  },
+  "dishwasher": {
+    "cycle": {
+      "threshold_watts": 50,
+      "min_duration_minutes": 15,
+      "min_off_minutes": 15,
+      "max_idle_gap_minutes": 5,
+      "tail_samples": 3,
+      "max_analysis_minutes": 9999,
+      "force_rebuild_pkl": false
+    },
+    "features": {
+      "target_len": 300,
+      "curve_norm_mode": "zscore"
+    },
+    "hybrid": {
+      "alpha": 1.0,
+      "beta": 1.2
+    },
+    "k": {
+      "search_max": 60,
+      "human_k_min": 20,
+      "human_max_largest_cluster_frac": 0.55,
+      "human_max_singleton_frac": 0.1,
+      "human_min_cluster_size": 3
+    }
+  },
+  "washing_machine": {
+    "cycle": {
+      "threshold_watts": 50,
+      "min_duration_minutes": 15,
+      "min_off_minutes": 15,
+      "max_idle_gap_minutes": 5,
+      "tail_samples": 5,
+      "max_analysis_minutes": 60,
+      "force_rebuild_pkl": false
+    },
+    "features": {
+      "target_len": 200,
+      "curve_norm_mode": "zscore"
+    },
+    "hybrid": {
+      "alpha": 1.0,
+      "beta": 1.2
+    },
+    "k": {
+      "search_max": 60,
+      "human_k_min": 20,
+      "human_max_largest_cluster_frac": 0.55,
+      "human_max_singleton_frac": 0.1,
+      "human_min_cluster_size": 3
+    }
+  },
+  "refrigerator": {
+    "cycle": {
+      "threshold_watts": 40,
+      "min_duration_minutes": 1.0,
+      "min_off_minutes": 5,
+      "max_idle_gap_minutes": 5,
+      "tail_samples": 2,
+      "max_analysis_minutes": 1,
+      "max_cycles_to_analyze": 900,
+      "force_rebuild_pkl": false
+    },
+    "features": {
+      "target_len": 50,
+      "curve_norm_mode": "zscore"
+    },
+    "hybrid": {
+      "alpha": 1.0,
+      "beta": 1.0
+    },
+    "k": {
+      "search_max": 60,
+      "human_k_min": 20,
+      "human_max_largest_cluster_frac": 0.55,
+      "human_max_singleton_frac": 0.1,
+      "human_min_cluster_size": 3
+    }
+  },
+  "computer": {
+    "cycle": {
+      "threshold_watts": 60,
+      "min_duration_minutes": 1,
+      "min_off_minutes": 5,
+      "max_idle_gap_minutes": 5,
+      "tail_samples": 5,
+      "max_analysis_minutes": 10,
+      "force_rebuild_pkl": false
+    },
+    "features": {
+      "target_len": 200,
+      "curve_norm_mode": "zscore"
+    },
+    "hybrid": {
+      "alpha": 1.0,
+      "beta": 1.0
+    },
+    "k": {
+      "search_max": 60,
+      "human_k_min": 20,
+      "human_max_largest_cluster_frac": 0.55,
+      "human_max_singleton_frac": 0.1,
+      "human_min_cluster_size": 3
+    }
+  }
+}
