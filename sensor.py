@@ -20,7 +20,7 @@ from collections import deque
 from typing import Optional
 from models import Sensor, Device
 from house_state import HouseState
-from canvas_zoom import event_to_logical
+from canvas_zoom import event_to_logical, snap_logical_position
 
 _BASE_DIR = Path(__file__).resolve().parent
 SENSOR_MAP_PATH = str(_BASE_DIR / "sensor_map.json")
@@ -36,6 +36,8 @@ TEMP_BASELINE: dict[str, float] = {}
 TEMP_CSV_BASELINE: dict[str, float] = {}
 TEMP_DEVICE_OFFSET: dict[str, float] = {}
 TEMP_DEVICE_HEAT: dict[str, float] = {}
+TEMP_SOURCE_MODE: dict[str, bool] = {}
+TEMP_LAST_DATETIME: dict[str, datetime] = {}
 
 # LLM runtime state (cleared on each reset, not persisted)
 LLM_PROFILE_CATALOG_PATH = _BASE_DIR / "LLM" / "smartmeter" / "llm_smartmeter_profiles.json"
@@ -99,6 +101,8 @@ def reset_temperature_runtime_state(*, clear_series_cache: bool = True) -> None:
     TEMP_CSV_BASELINE.clear()
     TEMP_DEVICE_OFFSET.clear()
     TEMP_DEVICE_HEAT.clear()
+    TEMP_SOURCE_MODE.clear()
+    TEMP_LAST_DATETIME.clear()
     TEMP_SIM_MIN.clear()
     if clear_series_cache:
         TEMP_SERIES.clear()
@@ -250,7 +254,10 @@ def _temperature_source_signature(sensor_name: str) -> tuple:
     """Return a cheap signature that changes when the relevant DHT files change."""
     devices_dir = Path(__file__).resolve().parent / "devices"
     label_path = devices_dir / f"dht_{_sanitize(sensor_name)}.csv"
-    candidates = [label_path] if label_path.is_file() else sorted(devices_dir.glob("dht_*.csv"))
+    # A label file with no valid readings falls back to a GPIO-bound file. Watch
+    # every DHT source so that this fallback cache is also invalidated when its
+    # actual source changes.
+    candidates = sorted({label_path, *devices_dir.glob("dht_*.csv")})
 
     signature = []
     for path in candidates:
@@ -309,30 +316,37 @@ def _load_temp_series_for_sensor(sensor_name: str):
         TEMP_SERIES_SIGNATURE[sensor_name] = source_signature
         return None
 
-    # keep only valid values (drop unreadable entries)
-    df = df.dropna(subset=["value"])
-    if df.empty:
+    # Keep only finite values and normalize timezone-aware timestamps to their
+    # wall-clock value. Simulator timestamps are intentionally timezone-naive.
+    clean_points = []
+    for timestamp, value in zip(df.index, df["value"]):
+        try:
+            normalized_timestamp = pd.Timestamp(timestamp)
+            if pd.isna(normalized_timestamp):
+                continue
+            if normalized_timestamp.tzinfo is not None:
+                normalized_timestamp = normalized_timestamp.tz_localize(None)
+            normalized_value = float(value)
+            if not math.isfinite(normalized_value):
+                continue
+            clean_points.append((normalized_timestamp, normalized_value))
+        except (TypeError, ValueError, OverflowError):
+            continue
+
+    if not clean_points:
         print(f"[TEMP] only NaN values for {sensor_name}")
         TEMP_SERIES[sensor_name] = None
         TEMP_SERIES_SIGNATURE[sensor_name] = source_signature
         return None
 
-    # ensure time ordering
-    if not isinstance(df.index, pd.DatetimeIndex):
-        try:
-            df.index = pd.to_datetime(df.index, errors="coerce")
-        except Exception as e:
-            print(f"[TEMP] cannot convert index to datetime for {sensor_name}: {e}")
-    df = df.sort_index()
-
-    if df.empty:
-        TEMP_SERIES[sensor_name] = None
-        TEMP_SERIES_SIGNATURE[sensor_name] = source_signature
-        return None
+    # Duplicate timestamps can occur when imported files are concatenated. A
+    # median is stable and agrees with the one-minute DHT loader aggregation.
+    clean_df = pd.DataFrame(clean_points, columns=["timestamp", "value"])
+    clean_df = clean_df.groupby("timestamp", as_index=True)["value"].median().to_frame().sort_index()
 
     # Store actual datetime objects (aligned to real timestamps, not relative minutes)
-    datetimes = df.index.to_list()
-    values = df["value"].astype(float).to_list()
+    datetimes = clean_df.index.to_list()
+    values = clean_df["value"].astype(float).to_list()
 
     TEMP_SERIES[sensor_name] = (datetimes, values)
     TEMP_SERIES_SIGNATURE[sensor_name] = source_signature
@@ -387,6 +401,8 @@ def get_replay_temperature(sensor_name: str, current_datetime: Optional[datetime
     Logic:
     - use data from the requested date when available;
     - otherwise use the closest previous available date;
+    - if the simulation predates every source day, use the earliest future day
+      as a reusable daily profile;
     - interpolate by time of day and bridge uncovered overnight hours smoothly.
     
     Args:
@@ -425,6 +441,50 @@ def get_replay_temperature(sensor_name: str, current_datetime: Optional[datetime
     target_minute = current_dt.hour * 60 + current_dt.minute + current_dt.second / 60.0
     result = _interpolate_reference_day(datetimes, values, reference_indices, target_minute)
     return max(15.0, min(40.0, float(result)))
+
+
+def get_recorded_temperature(sensor_name: str, current_datetime: Optional[datetime] = None):
+    """Return a real reading only when that exact source minute exists.
+
+    Unlike :func:`get_replay_temperature`, this function never borrows a past
+    or future day and never interpolates across a missing minute. It is used for
+    data labelled as ``real`` in runtime logs.
+    """
+    if current_datetime is None:
+        return None
+
+    series = _load_temp_series_for_sensor(sensor_name)
+    if not series:
+        return None
+
+    try:
+        target = pd.Timestamp(current_datetime)
+        if pd.isna(target):
+            return None
+        if target.tzinfo is not None:
+            target = target.tz_localize(None)
+        target = target.floor("min")
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+    datetimes, values = series
+    matches = []
+    for timestamp, value in zip(datetimes, values):
+        try:
+            source_timestamp = pd.Timestamp(timestamp)
+            if pd.isna(source_timestamp):
+                continue
+            if source_timestamp.tzinfo is not None:
+                source_timestamp = source_timestamp.tz_localize(None)
+            if source_timestamp.floor("min") != target:
+                continue
+            numeric_value = float(value)
+            if math.isfinite(numeric_value):
+                matches.append(numeric_value)
+        except (TypeError, ValueError, OverflowError):
+            continue
+
+    return float(np.median(matches)) if matches else None
 
 
 def _normalize_switch_state(door_state) -> float:
@@ -468,61 +528,67 @@ def _last_slope_deg_per_min(series) -> float:
     return (v2 - v1) / dt
 
 
-def add_sensor(canvas, event, load_active, on_changed=None):
+def add_sensor(canvas, event, load_active, on_changed=None, on_finished=None):
     global add_point_enabled
-    if add_point_enabled:
-        return
-
-    logical_x, logical_y = event_to_logical(canvas, event)
-    x = int(logical_x)
-    y = int(logical_y)
-
-    # Build device candidates from both data structures and what is currently drawn.
-    device_names = set()
-    for dev in devices or []:
-        if hasattr(dev, "name") and dev.name:
-            device_names.add(str(dev.name).strip())
-    for dev in devices_file or []:
-        if hasattr(dev, "name") and dev.name:
-            device_names.add(str(dev.name).strip())
-
+    created = False
     try:
-        for item_id in canvas.find_withtag("device"):
-            tags = canvas.gettags(item_id)
-            if tags:
-                # First tag is the device name in draw_device().
-                name_tag = str(tags[0]).strip()
-                if name_tag and name_tag != "device":
-                    device_names.add(name_tag)
-    except Exception:
-        pass
+        if add_point_enabled:
+            return False
 
-    dialog = SensorDialog(canvas.master, "Add sensor", device_names=sorted(n for n in device_names if n))
-    if dialog.result:
-        name, type, min_val, max_val, step, state, direction, consumption, associated_device = dialog.result
-        sensor = Sensor(
-            name=name,
-            x=x,
-            y=y,
-            type=type,
-            min_val=float(min_val),
-            max_val=float(max_val),
-            step=float(step),
-            state=float(state),
-            direction=direction,
-            consumption=consumption,
-            associated_device=associated_device,
-        )
+        logical_x, logical_y = event_to_logical(canvas, event)
+        x, y = snap_logical_position(canvas, logical_x, logical_y)
 
-        # write to the right list according to load_active
-        if load_active:
-            sensors_file.append(sensor)
-        else:
-            sensors.append(sensor)
+        # Build device candidates from both data structures and what is currently drawn.
+        device_names = set()
+        for dev in devices or []:
+            if hasattr(dev, "name") and dev.name:
+                device_names.add(str(dev.name).strip())
+        for dev in devices_file or []:
+            if hasattr(dev, "name") and dev.name:
+                device_names.add(str(dev.name).strip())
 
-        draw_sensor(canvas, sensor)
-        if callable(on_changed):
-            on_changed()
+        try:
+            for item_id in canvas.find_withtag("device"):
+                tags = canvas.gettags(item_id)
+                if tags:
+                    # First tag is the device name in draw_device().
+                    name_tag = str(tags[0]).strip()
+                    if name_tag and name_tag != "device":
+                        device_names.add(name_tag)
+        except Exception:
+            pass
+
+        dialog = SensorDialog(canvas.master, "Add sensor", device_names=sorted(n for n in device_names if n))
+        if dialog.result:
+            name, type, min_val, max_val, step, state, direction, consumption, associated_device = dialog.result
+            sensor = Sensor(
+                name=name,
+                x=x,
+                y=y,
+                type=type,
+                min_val=float(min_val),
+                max_val=float(max_val),
+                step=float(step),
+                state=float(state),
+                direction=direction,
+                consumption=consumption,
+                associated_device=associated_device,
+            )
+
+            # write to the right list according to load_active
+            if load_active:
+                sensors_file.append(sensor)
+            else:
+                sensors.append(sensor)
+
+            draw_sensor(canvas, sensor)
+            created = True
+            if callable(on_changed):
+                on_changed()
+        return created
+    finally:
+        if callable(on_finished):
+            on_finished(created)
 
 
 def get_last_real_temperature(sensor_name: str, window_minutes: int = 10):
@@ -608,15 +674,40 @@ def infer_room_state(sensor_name: str, window_minutes: int = 20) -> str:
 def compute_temperature(sensor, heating_factor, delta_seconds, current_datetime=None, active_devices=None):
     """Compute next Temperature sensor state with no UI side effects."""
     name, x, y = sensor.name, sensor.x, sensor.y
-    max_val = float(sensor.max_val)
-    current_state = float(sensor.state)
+    try:
+        current_state = float(sensor.state)
+    except (TypeError, ValueError, OverflowError):
+        current_state = 20.0
+    if not math.isfinite(current_state):
+        current_state = 20.0
+
+    try:
+        min_val = float(sensor.min_val)
+    except (TypeError, ValueError, OverflowError):
+        min_val = 0.0
+    try:
+        max_val = float(sensor.max_val)
+    except (TypeError, ValueError, OverflowError):
+        max_val = 50.0
+    if not math.isfinite(min_val):
+        min_val = 0.0
+    if not math.isfinite(max_val):
+        max_val = 50.0
+    if min_val > max_val:
+        min_val, max_val = max_val, min_val
 
     # 1 real second = 1 simulated minute
     prev_sim_min = float(TEMP_SIM_MIN.get(name, 0.0))
-    delta_sim_min = float(delta_seconds or 0.0)
+    try:
+        delta_sim_min = float(delta_seconds or 0.0)
+    except (TypeError, ValueError, OverflowError):
+        delta_sim_min = 0.0
+    if not math.isfinite(delta_sim_min):
+        delta_sim_min = 0.0
 
-    # Clamp delta to reasonable range (0.1 to 120 minutes per step)
-    delta_sim_min = max(0.1, min(120.0, delta_sim_min))
+    # A zero/negative step must not advance thermal state. Cap large jumps so a
+    # delayed UI callback cannot instantly finish every heating/cooling curve.
+    delta_sim_min = max(0.0, min(120.0, delta_sim_min))
 
     sim_min = prev_sim_min + delta_sim_min
     TEMP_SIM_MIN[name] = sim_min
@@ -630,6 +721,37 @@ def compute_temperature(sensor, heating_factor, delta_seconds, current_datetime=
 
     # Preload CSV target (if any) so we can decide whether to apply daily cycle.
     csv_target = get_replay_temperature(name, current_datetime)
+
+    normalized_datetime = None
+    if current_datetime is not None:
+        try:
+            normalized_datetime = pd.Timestamp(current_datetime)
+            if pd.isna(normalized_datetime):
+                normalized_datetime = None
+            elif normalized_datetime.tzinfo is not None:
+                normalized_datetime = normalized_datetime.tz_localize(None)
+        except (TypeError, ValueError, OverflowError):
+            normalized_datetime = None
+
+    previous_datetime = TEMP_LAST_DATETIME.get(name)
+    timeline_rewound = (
+        normalized_datetime is not None
+        and previous_datetime is not None
+        and normalized_datetime < previous_datetime
+    )
+    if normalized_datetime is not None:
+        TEMP_LAST_DATETIME[name] = normalized_datetime
+
+    using_csv = csv_target is not None
+    previous_source_mode = TEMP_SOURCE_MODE.get(name)
+    source_changed = previous_source_mode is not None and previous_source_mode != using_csv
+    TEMP_SOURCE_MODE[name] = using_csv
+
+    if timeline_rewound or source_changed:
+        TEMP_BASELINE.pop(name, None)
+        TEMP_CSV_BASELINE.pop(name, None)
+        TEMP_DEVICE_OFFSET.pop(name, None)
+        TEMP_DEVICE_HEAT.pop(name, None)
 
     # Without a CSV, keep the scenario's initial temperature as the baseline.
     if csv_target is None:
@@ -677,7 +799,13 @@ def compute_temperature(sensor, heating_factor, delta_seconds, current_datetime=
 
     # The legacy heating factor describes the same nearby oven already present
     # in active_devices. Keep it only as a fallback to avoid counting the oven twice.
-    external_heat = 0.0 if active_oven_counted else float(heating_factor or 0.0) * 0.5
+    try:
+        normalized_heating_factor = float(heating_factor or 0.0)
+    except (TypeError, ValueError, OverflowError):
+        normalized_heating_factor = 0.0
+    if not math.isfinite(normalized_heating_factor):
+        normalized_heating_factor = 0.0
+    external_heat = 0.0 if active_oven_counted else normalized_heating_factor * 0.5
     model_heat = device_heat + external_heat
 
     device_alpha = 1.0 - math.exp(-delta_sim_min / DEVICE_EFFECT_TIME_CONSTANT_MIN)
@@ -719,15 +847,7 @@ def compute_temperature(sensor, heating_factor, delta_seconds, current_datetime=
         TEMP_DEVICE_OFFSET[name] = device_offset
         new_state = base_temp + device_offset
 
-    effective_min = 0.0
-    effective_max = max_val
-    if csv_target is not None:
-        try:
-            effective_min = min(effective_min, float(csv_target))
-            effective_max = max(effective_max, float(csv_target))
-        except Exception:
-            pass
-    new_state = max(effective_min, min(effective_max, new_state))
+    new_state = max(min_val, min(max_val, new_state))
     new_state = round(new_state, 2)
 
     recent.append(float(new_state))

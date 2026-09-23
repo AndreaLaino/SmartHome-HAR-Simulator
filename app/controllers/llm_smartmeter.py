@@ -28,6 +28,7 @@ from app.io.safe_dialog import ask_open_file, ask_open_files, ask_save_file, ask
 from app.context import AppContext
 from app.logging_setup import setup_logging
 from app.save_paths import get_or_create_current_save_session, get_session_subdir
+from app.ui.theme import apply_theme_tree, get_theme_palette, set_theme_role
 from read import read_devices
 
 logger = setup_logging("controllers.llm_smartmeter")
@@ -1274,56 +1275,10 @@ def _show_completion_chart_preview(
         toggle_partial_btn = tk.Button(toolbar, text="Hide partial cycle", command=_toggle_partial_cycle)
         toggle_partial_btn.pack(side=tk.LEFT, padx=(8, 2))
 
-    _force_dark_tk_theme(toolbar)
+    apply_theme_tree(toolbar, "light")
     canvas_plot.draw()
     canvas_plot.get_tk_widget().pack(side=tk.TOP, fill=tk.BOTH, expand=True)
     plt.close(fig)
-
-
-def _force_dark_tk_theme(widget: tk.Misc) -> None:
-    dark_bg = "#202020"
-    panel_bg = "#2b2b2b"
-    text_fg = "#f2f2f2"
-    entry_bg = "#111111"
-    active_bg = "#3a3a3a"
-    klass = widget.winfo_class()
-    is_button = klass == "Button"
-    bg = entry_bg if klass in {"Entry", "TEntry"} else dark_bg
-    if klass in {"Checkbutton", "Radiobutton", "Labelframe"}:
-        bg = panel_bg
-    fg = "#111111" if is_button else text_fg
-    active_fg = "#111111" if is_button else text_fg
-    try:
-        widget.configure(bg=bg)
-    except tk.TclError:
-        pass
-    try:
-        widget.configure(fg=fg)
-    except tk.TclError:
-        pass
-    try:
-        widget.configure(activebackground=active_bg, activeforeground=active_fg)
-    except tk.TclError:
-        pass
-    try:
-        widget.configure(disabledforeground="#777777")
-    except tk.TclError:
-        pass
-    try:
-        widget.configure(readonlybackground=entry_bg, insertbackground=text_fg)
-    except tk.TclError:
-        pass
-    try:
-        widget.configure(selectcolor=panel_bg)
-    except tk.TclError:
-        pass
-    try:
-        widget.configure(highlightbackground=dark_bg, highlightcolor=active_bg)
-    except tk.TclError:
-        pass
-
-    for child in widget.winfo_children():
-        _force_dark_tk_theme(child)
 
 
 def _show_info_message(parent: tk.Misc, message: str) -> None:
@@ -1333,27 +1288,209 @@ def _show_info_message(parent: tk.Misc, message: str) -> None:
 def open_llm_smartmeter_ui(ctx: AppContext):
     win = tk.Toplevel(ctx.window)
     win.title("LLM Smart Meter")
-    win.geometry("920x620")
-    win.configure(bg="#202020")
+    win.geometry("1040x790")
+    win.minsize(880, 700)
 
-    frm = tk.Frame(win, bg="#202020")
-    frm.pack(fill="both", expand=True, padx=12, pady=12)
+    colors = get_theme_palette(None)
+    win.configure(bg=colors["background"])
 
-    tk.Label(frm, text="Appliance").grid(row=0, column=0, sticky="w")
-    appliance_var = tk.StringVar(value="Computer")
-    appliance_combo = ttk.Combobox(
-        frm,
-        textvariable=appliance_var,
-        values=list(APPLIANCE_OPTIONS.keys()),
-        state="readonly",
-        width=30,
+    style = ttk.Style(win)
+    style.configure(
+        "LLM.Horizontal.TProgressbar",
+        troughcolor=colors["entry"],
+        background=colors["accent"],
+        bordercolor=colors["entry"],
+        lightcolor=colors["accent"],
+        darkcolor=colors["accent"],
+        thickness=10,
     )
-    appliance_combo.grid(row=0, column=1, sticky="w", padx=(8, 0))
+    frm = tk.Frame(win, bg=colors["background"])
+    frm.pack(fill="both", expand=True, padx=24, pady=20)
+    frm.grid_columnconfigure(0, weight=1)
+    frm.grid_rowconfigure(5, weight=1)
 
-    tk.Label(frm, text="CSV source").grid(row=1, column=0, sticky="w", pady=(10, 0))
+    header = tk.Frame(frm, bg=colors["background"])
+    header.grid(row=0, column=0, sticky="ew", pady=(0, 16))
+    tk.Label(
+        header,
+        text="LLM Smart Meter",
+        bg=colors["background"],
+        fg=colors["text"],
+        font=("Segoe UI", 20, "bold"),
+    ).pack(anchor="w")
+    tk.Label(
+        header,
+        text="Build and evaluate an appliance profile from recorded power data.",
+        bg=colors["background"],
+        fg=colors["muted"],
+        font=("Segoe UI", 10),
+    ).pack(anchor="w", pady=(3, 0))
+
+    def make_card(row: int, title: str, *, pady=(0, 12)) -> tk.Frame:
+        card = tk.Frame(
+            frm,
+            bg=colors["surface"],
+            highlightbackground=colors["border"],
+            highlightthickness=1,
+        )
+        set_theme_role(card, "surface")
+        card.grid(row=row, column=0, sticky="ew", pady=pady)
+        card.grid_columnconfigure(1, weight=1)
+        tk.Label(
+            card,
+            text=title,
+            bg=colors["surface"],
+            fg=colors["text"],
+            font=("Segoe UI", 11, "bold"),
+        ).grid(row=0, column=0, columnspan=3, sticky="w", padx=18, pady=(14, 10))
+        return card
+
+    def field_label(parent, text: str):
+        label = tk.Label(
+            parent,
+            text=text,
+            bg=colors["surface"],
+            fg=colors["muted"],
+            font=("Segoe UI", 9, "bold"),
+        )
+        return set_theme_role(label, "muted")
+
+    def make_entry(parent, variable, *, width=48, state="normal"):
+        return tk.Entry(
+            parent,
+            textvariable=variable,
+            width=width,
+            state=state,
+            bg=colors["entry"],
+            fg=colors["text"],
+            insertbackground=colors["text"],
+            readonlybackground=colors["entry"],
+            disabledbackground=colors["surface"],
+            disabledforeground=colors["disabled"],
+            relief="flat",
+            highlightthickness=1,
+            highlightbackground=colors["border"],
+            highlightcolor=colors["accent"],
+            font=("Segoe UI", 10),
+        )
+
+    def make_button(parent, text: str, command=None, *, primary=False, width=None):
+        background = colors["accent"] if primary else colors["surface_hover"]
+        active = colors["accent_hover"] if primary else colors["border"]
+        button = tk.Button(
+            parent,
+            text=text,
+            command=command,
+            width=width,
+            bg=background,
+            fg=colors["text"],
+            activebackground=active,
+            activeforeground=colors["text"],
+            disabledforeground=colors["disabled"],
+            relief="flat",
+            bd=0,
+            padx=16,
+            pady=8,
+            cursor="hand2",
+            font=("Segoe UI", 10, "bold" if primary else "normal"),
+        )
+        set_theme_role(button, "primary" if primary else "button")
+        button.bind(
+            "<Enter>",
+            lambda _event, widget=button: (
+                widget.config(bg=widget._theme_hover)
+                if str(widget.cget("state")) != "disabled"
+                else None
+            ),
+        )
+        button.bind(
+            "<Leave>",
+            lambda _event, widget=button: (
+                widget.config(bg=widget._theme_normal)
+                if str(widget.cget("state")) != "disabled"
+                else None
+            ),
+        )
+        button._theme_normal = background
+        button._theme_hover = active
+        return button
+
+    def make_select(parent, variable, values):
+        select = tk.Menubutton(
+            parent,
+            textvariable=variable,
+            anchor="w",
+            direction="below",
+            indicatoron=True,
+            bg=colors["entry"],
+            fg=colors["text"],
+            activebackground=colors["selection"],
+            activeforeground=colors["text"],
+            disabledforeground=colors["disabled"],
+            relief="flat",
+            bd=0,
+            padx=12,
+            pady=8,
+            highlightthickness=1,
+            highlightbackground=colors["border"],
+            highlightcolor=colors["accent"],
+            cursor="hand2",
+            font=("Segoe UI", 10),
+        )
+        menu = tk.Menu(
+            select,
+            tearoff=False,
+            bg=colors["entry"],
+            fg=colors["text"],
+            activebackground=colors["selection"],
+            activeforeground=colors["text"],
+            disabledforeground=colors["disabled"],
+            selectcolor=colors["accent"],
+            relief="flat",
+            bd=1,
+            font=("Segoe UI", 10),
+        )
+        for value in values:
+            menu.add_radiobutton(
+                label=value,
+                value=value,
+                variable=variable,
+                background=colors["entry"],
+                foreground=colors["text"],
+                activebackground=colors["selection"],
+                activeforeground=colors["text"],
+                selectcolor=colors["accent"],
+            )
+        select.config(menu=menu)
+        select._theme_menu = menu
+        return select
+
+    def make_radio(parent, text: str, value: str, variable):
+        return tk.Radiobutton(
+            parent,
+            text=text,
+            value=value,
+            variable=variable,
+            bg=colors["surface"],
+            fg=colors["text"],
+            activebackground=colors["surface"],
+            activeforeground=colors["text"],
+            disabledforeground=colors["disabled"],
+            selectcolor=colors["entry"],
+            font=("Segoe UI", 10),
+            cursor="hand2",
+        )
+
+    input_card = make_card(1, "Input data")
+    field_label(input_card, "APPLIANCE").grid(row=1, column=0, sticky="w", padx=(18, 12), pady=(0, 10))
+    appliance_var = tk.StringVar(value="Computer")
+    appliance_select = make_select(input_card, appliance_var, APPLIANCE_OPTIONS.keys())
+    appliance_select.grid(row=1, column=1, sticky="ew", padx=(0, 18), pady=(0, 10))
+
+    field_label(input_card, "CSV SOURCE").grid(row=2, column=0, sticky="w", padx=(18, 12), pady=(0, 16))
     csv_var = tk.StringVar()
-    csv_entry = tk.Entry(frm, textvariable=csv_var, width=48)
-    csv_entry.grid(row=1, column=1, sticky="w", padx=(8, 0), pady=(10, 0))
+    csv_entry = make_entry(input_card, csv_var)
+    csv_entry.grid(row=2, column=1, sticky="ew", padx=(0, 10), pady=(0, 16), ipady=6)
 
     def _browse_csv():
         path = ask_open_file(
@@ -1363,28 +1500,24 @@ def open_llm_smartmeter_ui(ctx: AppContext):
         if path:
             csv_var.set(path)
 
-    tk.Button(frm, text="Browse", command=_browse_csv).grid(row=1, column=2, sticky="w", padx=(8, 0), pady=(10, 0))
+    csv_browse_btn = make_button(input_card, "Browse...", _browse_csv)
+    csv_browse_btn.grid(row=2, column=2, sticky="e", padx=(0, 18), pady=(0, 16))
 
-    tk.Label(frm, text="Parameters").grid(row=2, column=0, sticky="w", pady=(12, 0))
+    config_card = make_card(2, "Analysis configuration")
     params_mode_var = tk.StringVar(value="default")
-
-    params_wrap = tk.Frame(frm)
-    params_wrap.grid(row=2, column=1, sticky="w", padx=(8, 0), pady=(12, 0))
-    tk.Radiobutton(params_wrap, text="Use default parameters", value="default", variable=params_mode_var).pack(anchor="w")
-    tk.Radiobutton(params_wrap, text="Use custom JSON parameters", value="custom", variable=params_mode_var).pack(anchor="w")
+    field_label(config_card, "PARAMETERS").grid(row=1, column=0, sticky="nw", padx=(18, 12), pady=(0, 10))
+    params_wrap = tk.Frame(config_card, bg=colors["surface"])
+    params_wrap.grid(row=1, column=1, columnspan=2, sticky="w", padx=(0, 18), pady=(0, 10))
+    params_radios = [
+        make_radio(params_wrap, "Use defaults", "default", params_mode_var),
+        make_radio(params_wrap, "Custom JSON", "custom", params_mode_var),
+    ]
+    for radio in params_radios:
+        radio.pack(side="left", padx=(0, 18))
 
     params_path_var = tk.StringVar()
-    params_entry = tk.Entry(
-        frm,
-        textvariable=params_path_var,
-        width=48,
-        state="readonly",
-        readonlybackground="#111111",
-        fg="#f2f2f2",
-        bg="#111111",
-        insertbackground="#f2f2f2",
-    )
-    params_entry.grid(row=3, column=1, sticky="w", padx=(8, 0), pady=(6, 0))
+    params_entry = make_entry(config_card, params_path_var, state="readonly")
+    params_entry.grid(row=2, column=1, sticky="ew", padx=(0, 10), pady=(0, 12), ipady=6)
 
     def _browse_params_json():
         if params_mode_var.get() != "custom":
@@ -1397,42 +1530,42 @@ def open_llm_smartmeter_ui(ctx: AppContext):
         if path:
             params_path_var.set(path)
 
-    params_browse_btn = tk.Button(frm, text="Browse", command=_browse_params_json)
-    params_browse_btn.grid(row=3, column=2, sticky="w", padx=(8, 0), pady=(6, 0))
+    params_browse_btn = make_button(config_card, "Browse...", _browse_params_json)
+    params_browse_btn.grid(row=2, column=2, sticky="e", padx=(0, 18), pady=(0, 12))
 
-    tk.Label(frm, text="K mode").grid(row=4, column=0, sticky="w", pady=(14, 0))
+    field_label(config_card, "CLUSTERS (K)").grid(row=3, column=0, sticky="nw", padx=(18, 12), pady=(0, 16))
     k_mode_var = tk.StringVar(value="best")
-
-    rb_wrap = tk.Frame(frm)
-    rb_wrap.grid(row=4, column=1, sticky="w", padx=(8, 0), pady=(14, 0))
-
-    tk.Radiobutton(rb_wrap, text="Best k (vote)", value="best", variable=k_mode_var).pack(anchor="w")
-    tk.Radiobutton(rb_wrap, text="Human k", value="human", variable=k_mode_var).pack(anchor="w")
-    tk.Radiobutton(rb_wrap, text="Custom k", value="custom", variable=k_mode_var).pack(anchor="w")
+    rb_wrap = tk.Frame(config_card, bg=colors["surface"])
+    rb_wrap.grid(row=3, column=1, sticky="w", padx=(0, 10), pady=(0, 16))
+    k_radios = [
+        make_radio(rb_wrap, "Best k (vote)", "best", k_mode_var),
+        make_radio(rb_wrap, "Human k", "human", k_mode_var),
+        make_radio(rb_wrap, "Custom k", "custom", k_mode_var),
+    ]
+    for radio in k_radios:
+        radio.pack(side="left", padx=(0, 18))
 
     custom_k_var = tk.StringVar(value="20")
-    custom_k_entry = tk.Entry(
-        frm,
-        textvariable=custom_k_var,
-        width=8,
-        state="readonly",
-        readonlybackground="#111111",
-        fg="#f2f2f2",
-        bg="#111111",
-        insertbackground="#f2f2f2",
-    )
-    custom_k_entry.grid(row=4, column=2, sticky="w", padx=(8, 0), pady=(14, 0))
+    custom_k_entry = make_entry(config_card, custom_k_var, width=7, state="readonly")
+    custom_k_entry.grid(row=3, column=2, sticky="e", padx=(0, 18), pady=(0, 16), ipady=6)
 
     completion_var = tk.BooleanVar(value=True)
-    completion_frame = tk.LabelFrame(frm, text="Trailing Cluster Completion")
-    completion_frame.grid(row=5, column=0, columnspan=3, sticky="ew", pady=(16, 0))
+    completion_frame = make_card(3, "Trailing cluster completion")
     completion_frame.grid_columnconfigure(0, weight=1)
     completion_check = tk.Checkbutton(
         completion_frame,
         text="Complete the last short cycle using the closest historical case",
         variable=completion_var,
+        bg=colors["surface"],
+        fg=colors["text"],
+        activebackground=colors["surface"],
+        activeforeground=colors["text"],
+        disabledforeground=colors["disabled"],
+        selectcolor=colors["entry"],
+        font=("Segoe UI", 10),
+        cursor="hand2",
     )
-    completion_check.grid(row=0, column=0, sticky="w", padx=8, pady=(8, 2))
+    completion_check.grid(row=1, column=0, columnspan=3, sticky="w", padx=18, pady=(0, 4))
     tk.Label(
         completion_frame,
         text=(
@@ -1440,12 +1573,16 @@ def open_llm_smartmeter_ui(ctx: AppContext):
             "the initial shape is matched against historical cycles and the missing tail is generated."
         ),
         justify="left",
-        wraplength=760,
-    ).grid(row=1, column=0, sticky="w", padx=8, pady=(0, 8))
+        wraplength=900,
+        bg=colors["surface"],
+        fg=colors["muted"],
+        font=("Segoe UI", 9),
+    ).grid(row=2, column=0, columnspan=3, sticky="w", padx=38, pady=(0, 14))
 
     def _on_params_mode_change(*_args):
         custom_mode = params_mode_var.get() == "custom"
         params_entry.config(state="normal" if custom_mode else "readonly")
+        params_browse_btn.config(state="normal" if custom_mode else "disabled")
 
     params_mode_var.trace_add("write", _on_params_mode_change)
 
@@ -1456,54 +1593,96 @@ def open_llm_smartmeter_ui(ctx: AppContext):
             custom_k_entry.config(state="readonly")
 
     k_mode_var.trace_add("write", _on_k_mode_change)
+    _on_params_mode_change()
+    _on_k_mode_change()
 
+    status_frame = tk.Frame(frm, bg=colors["background"])
+    status_frame.grid(row=4, column=0, sticky="ew", pady=(2, 12))
+    status_frame.grid_columnconfigure(1, weight=1)
+    tk.Label(
+        status_frame,
+        text="STATUS",
+        bg=colors["background"],
+        fg=colors["muted"],
+        font=("Segoe UI", 9, "bold"),
+    ).grid(row=0, column=0, sticky="w", padx=(2, 12))
     status_var = tk.StringVar(value="Ready")
-    tk.Label(frm, textvariable=status_var, fg="blue").grid(row=6, column=0, columnspan=3, sticky="w", pady=(16, 0))
+    tk.Label(
+        status_frame,
+        textvariable=status_var,
+        bg=colors["background"],
+        fg=colors["text"],
+        font=("Segoe UI", 10, "bold"),
+    ).grid(row=0, column=1, sticky="w")
 
     progress_var = tk.DoubleVar(value=0.0)
     progress_bar = ttk.Progressbar(
-        frm,
+        status_frame,
         mode="determinate",
         maximum=100,
         variable=progress_var,
-        length=420,
+        style="LLM.Horizontal.TProgressbar",
     )
-    progress_bar.grid(row=7, column=0, columnspan=3, sticky="ew", pady=(6, 0))
+    progress_bar.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(8, 0))
     progress_bar.grid_remove()
 
-    result_frame = tk.LabelFrame(frm, text="Completion Results")
-    result_frame.grid(row=8, column=0, columnspan=3, sticky="ew", pady=(14, 0))
+    result_frame = make_card(5, "Completion results")
+    result_frame.grid_configure(sticky="nsew")
     result_frame.grid_columnconfigure(0, weight=1)
     completion_status_var = tk.StringVar(value="No completion generated yet.")
     tk.Label(
         result_frame,
         textvariable=completion_status_var,
         justify="left",
-        wraplength=760,
-    ).grid(row=0, column=0, columnspan=3, sticky="w", padx=8, pady=(8, 8))
+        wraplength=900,
+        bg=colors["surface"],
+        fg=colors["muted"],
+        font=("Segoe UI", 10),
+    ).grid(row=1, column=0, columnspan=3, sticky="w", padx=18, pady=(0, 10))
 
-    comparison_plot_btn = tk.Button(
+    comparison_plot_btn = make_button(
         result_frame,
-        text="Show comparison chart",
-        command=lambda: _show_info_message(win, "No comparison chart available yet."),
+        "Show comparison chart",
+        lambda: _show_info_message(win, "No comparison chart available yet."),
     )
-    comparison_plot_btn.grid(row=1, column=0, sticky="w", padx=8, pady=(0, 8))
+    comparison_plot_btn._has_chart = False
+    comparison_plot_btn.config(state="disabled")
+    comparison_plot_btn.grid(row=2, column=0, sticky="w", padx=18, pady=(0, 14))
 
-    btn_row = tk.Frame(frm)
-    btn_row.grid(row=9, column=0, columnspan=3, sticky="e", pady=(20, 0))
+    btn_row = tk.Frame(frm, bg=colors["background"])
+    btn_row.grid(row=6, column=0, sticky="e", pady=(4, 0))
 
-    start_btn = tk.Button(btn_row, text="Start", width=12)
+    start_btn = make_button(btn_row, "Start analysis", primary=True, width=16)
     start_btn.pack(side="right")
 
     def _set_running(running: bool):
-        state = "disabled" if running else "normal"
-        start_btn.config(state=state)
-        appliance_combo.config(state="readonly")
-        csv_entry.config(state="normal")
-        completion_check.config(state="normal")
-        custom_k_entry.config(state="normal" if (not running and k_mode_var.get() == "custom") else "readonly")
-        params_entry.config(state="normal" if (not running and params_mode_var.get() == "custom") else "readonly")
-        params_browse_btn.config(state="normal")
+        start_btn.config(state="disabled" if running else "normal")
+        appliance_select.config(state="disabled" if running else "normal")
+        csv_entry.config(state="disabled" if running else "normal")
+        csv_browse_btn.config(state="disabled" if running else "normal")
+        completion_check.config(state="disabled" if running else "normal")
+        for radio in [*params_radios, *k_radios]:
+            radio.config(state="disabled" if running else "normal")
+        custom_k_entry.config(
+            state="normal"
+            if (not running and k_mode_var.get() == "custom")
+            else ("disabled" if running else "readonly")
+        )
+        params_entry.config(
+            state="normal"
+            if (not running and params_mode_var.get() == "custom")
+            else ("disabled" if running else "readonly")
+        )
+        params_browse_btn.config(
+            state="normal"
+            if (not running and params_mode_var.get() == "custom")
+            else "disabled"
+        )
+        comparison_plot_btn.config(
+            state="normal"
+            if (not running and comparison_plot_btn._has_chart)
+            else "disabled"
+        )
         if running:
             progress_var.set(0.0)
             progress_bar.grid()
@@ -1544,12 +1723,14 @@ def open_llm_smartmeter_ui(ctx: AppContext):
                 _set_running(False)
                 status_var.set("Done")
                 if result.completion_plot_path and result.reference_plot_path:
+                    comparison_plot_btn._has_chart = True
                     completion_status_var.set(
                         "Trailing short cycle completed.\n"
                         f"Matched historical cycle: {result.completion_reference_cycle_id} "
                         f"(cluster {result.completion_reference_cluster})."
                     )
                     comparison_plot_btn.config(
+                        state="normal",
                         command=lambda: _show_completion_chart_preview(
                             win,
                             "Completed vs reference cycle",
@@ -1557,11 +1738,13 @@ def open_llm_smartmeter_ui(ctx: AppContext):
                         ),
                     )
                 else:
+                    comparison_plot_btn._has_chart = False
                     completion_status_var.set(
                         "No trailing short cycle was completed. "
                         "Either the CSV does not end with a short cycle or no compatible historical case was found."
                     )
                     comparison_plot_btn.config(
+                        state="disabled",
                         command=lambda: _show_info_message(win, "No comparison chart available for this run."),
                     )
                 completion_lines = ""
@@ -1642,7 +1825,9 @@ def open_llm_smartmeter_ui(ctx: AppContext):
         _set_running(True)
         _update_progress(0, "Starting LLM run")
         completion_status_var.set("Running completion analysis...")
+        comparison_plot_btn._has_chart = False
         comparison_plot_btn.config(
+            state="disabled",
             command=lambda: _show_info_message(win, "Wait for the current run to finish.")
         )
         th = threading.Thread(
@@ -1653,4 +1838,21 @@ def open_llm_smartmeter_ui(ctx: AppContext):
         th.start()
 
     start_btn.config(command=_start)
-    _force_dark_tk_theme(win)
+
+    def apply_window_style() -> None:
+        colors.clear()
+        colors.update(get_theme_palette(None))
+        apply_theme_tree(win, "light")
+        apply_theme_tree(appliance_select._theme_menu, "light")
+        style.configure(
+            "LLM.Horizontal.TProgressbar",
+            troughcolor=colors["entry"],
+            background=colors["accent"],
+            bordercolor=colors["entry"],
+            lightcolor=colors["accent"],
+            darkcolor=colors["accent"],
+            thickness=10,
+        )
+
+    apply_window_style()
+    return win

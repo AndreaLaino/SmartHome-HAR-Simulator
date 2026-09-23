@@ -19,6 +19,13 @@ from log import log_llm_cycle_event
 from sensor import PIRSensorAdapter, SwitchSensorAdapter, WeightSensorAdapter
 from sim import _append_unique_sample, _consumption_to_bin_state, append_unique_binary
 from timer import TimerApp
+from app.controllers.simulation import (
+    activate_manual_interaction,
+    enable_all_menus,
+    start_sim,
+)
+from device import add_device
+from point import add_point
 
 
 def make_sensor(name, sensor_type, state=0):
@@ -153,14 +160,17 @@ class TimerLifecycleTests(unittest.TestCase):
             self.text = kwargs.get("text", self.text)
 
     class FakeEntry:
+        def __init__(self):
+            self.inserted = []
+
         def get(self):
             return "12:00"
 
         def delete(self, *_args):
             pass
 
-        def insert(self, *_args):
-            pass
+        def insert(self, *args):
+            self.inserted.append(args)
 
     class FakeLabel(FakeButton):
         pass
@@ -197,6 +207,170 @@ class TimerLifecycleTests(unittest.TestCase):
         timer.reset()
         self.assertEqual(events, ["start", "pause", "start", "reset"])
         self.assertIsNone(timer.start_time)
+
+    def test_midnight_start_time_preference(self):
+        timer = TimerApp.__new__(TimerApp)
+        timer.start_time_mode = "midnight"
+
+        self.assertEqual(timer._initial_start_hour(), "00:00")
+
+    def test_computer_start_time_preference(self):
+        timer = TimerApp.__new__(TimerApp)
+        timer.start_time_mode = "computer"
+
+        with patch("timer.datetime") as mocked_datetime:
+            mocked_datetime.now.return_value.strftime.return_value = "14:37"
+            self.assertEqual(timer._initial_start_hour(), "14:37")
+
+    def test_reset_displays_computer_start_time_immediately(self):
+        events = []
+        timer = self.make_timer(events)
+        timer.start_time_mode = "computer"
+
+        with patch("timer.datetime") as mocked_datetime:
+            mocked_datetime.today.return_value.strftime.return_value = "2026-06-15"
+            mocked_datetime.now.return_value.strftime.return_value = "14:37"
+            timer.reset()
+
+        self.assertEqual(timer.start_hour_entry.inserted[-1], (0, "14:37"))
+        self.assertEqual(
+            timer.label.text,
+            "Time: 14:37 \n Date: 2026-06-15",
+        )
+
+
+class ManualModeMenuTests(unittest.TestCase):
+    def test_manual_tool_does_not_start_a_paused_timer(self):
+        calls = []
+
+        class Timer:
+            is_running = False
+
+            def __init__(self):
+                self.start_calls = 0
+
+            def start_stop(self):
+                self.start_calls += 1
+
+        timer = Timer()
+        ctx = type(
+            "Context",
+            (),
+            {
+                "timer_app_instance": timer,
+                "_restore_manual_canvas_binding": lambda self: calls.append(
+                    "restore"
+                ),
+            },
+        )()
+
+        activate_manual_interaction(ctx)
+
+        self.assertEqual(timer.start_calls, 0)
+        self.assertEqual(calls, ["restore"])
+
+    def test_manual_tool_restores_interaction_for_a_running_timer(self):
+        calls = []
+        timer = type("Timer", (), {"is_running": True})()
+        ctx = type(
+            "Context",
+            (),
+            {
+                "timer_app_instance": timer,
+                "_restore_manual_canvas_binding": lambda self: calls.append(
+                    "restore"
+                ),
+            },
+        )()
+
+        activate_manual_interaction(ctx)
+
+        self.assertEqual(calls, ["restore"])
+
+    def test_manual_tool_creates_a_session_when_needed(self):
+        ctx = type("Context", (), {"timer_app_instance": None})()
+
+        with patch("app.controllers.simulation.start_sim") as mocked_start:
+            activate_manual_interaction(ctx)
+
+        mocked_start.assert_called_once_with(ctx)
+
+    def test_starting_manual_mode_cancels_pending_canvas_action(self):
+        calls = []
+
+        class Context:
+            timer_app_instance = None
+            load_active = False
+            _cancel_canvas_action = lambda self: calls.append("cancel")
+
+        with (
+            patch(
+                "app.controllers.simulation._resolve_runtime_sources",
+                return_value={"sensors": []},
+            ),
+            patch("app.ui.rooms.refresh_rooms", return_value=[]),
+            patch("tkinter.messagebox.showwarning"),
+        ):
+            start_sim(Context())
+
+        self.assertEqual(calls, ["cancel"])
+
+    def test_all_scenario_commands_remain_available_in_manual_mode(self):
+        class Menu:
+            def __init__(self):
+                self.states = {}
+
+            def entryconfig(self, label, **kwargs):
+                self.states[label] = kwargs["state"]
+
+        class Context:
+            scenario_menu = Menu()
+
+        ctx = Context()
+        enable_all_menus(ctx)
+
+        self.assertEqual(ctx.scenario_menu.states["Add devices"], "normal")
+        self.assertEqual(ctx.scenario_menu.states["Add sensors"], "normal")
+        self.assertEqual(ctx.scenario_menu.states["Add walls"], "normal")
+
+    def test_cancelled_device_dialog_finishes_temporary_placement(self):
+        class Canvas:
+            master = object()
+
+        finished = []
+        with (
+            patch("device.event_to_logical", return_value=(10, 20)),
+            patch("device.DeviceDialog") as dialog,
+        ):
+            dialog.return_value.result = None
+            created = add_device(
+                Canvas(),
+                object(),
+                False,
+                on_finished=finished.append,
+            )
+
+        self.assertFalse(created)
+        self.assertEqual(finished, [False])
+
+    def test_cancelled_point_dialog_finishes_temporary_placement(self):
+        class Canvas:
+            pass
+
+        finished = []
+        with (
+            patch("point.event_to_logical", return_value=(10, 20)),
+            patch("point.simpledialog.askstring", return_value=None),
+        ):
+            created = add_point(
+                Canvas(),
+                object(),
+                False,
+                on_finished=finished.append,
+            )
+
+        self.assertFalse(created)
+        self.assertEqual(finished, [False])
 
 
 class ConsumptionAndPredictionTests(unittest.TestCase):

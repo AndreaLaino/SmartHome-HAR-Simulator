@@ -7,6 +7,7 @@ from typing import Dict, Any
 from sensor import sensors
 from read import read_sensors, read_devices
 from app.logging_setup import setup_logging
+from app.ui.theme import apply_theme_tree, get_widget_theme_mode
 
 logger = setup_logging("ui.bindings")
 
@@ -337,6 +338,7 @@ def open_bind_ip_ui(root_win: tk.Tk, sensor_states: dict):
 
     tk.Button(btns, text="Save", command=_save_and_close).pack(side="right")
     tk.Button(btns, text="Close", command=win.destroy).pack(side="right", padx=8)
+    apply_theme_tree(win, get_widget_theme_mode(root_win))
 
 # ---------- DHT / PIR / Switch / Weight (GPIO) ----------
 
@@ -504,3 +506,4 @@ def open_bind_gpio_sensors_ui(root_win: tk.Tk, sensor_states: dict):
 
     tk.Button(bottom, text="Save", command=_save).pack(side="right")
     tk.Button(bottom, text="Close", command=win.destroy).pack(side="right", padx=8)
+    apply_theme_tree(win, get_widget_theme_mode(root_win))

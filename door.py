@@ -6,7 +6,34 @@ from canvas_zoom import event_to_logical, to_canvas
 
 doors = []
 
-def draw_line_door(canvas, window, load_active):
+
+def add_door_between_points(canvas, point1, point2, load_active, on_changed=None):
+    """Create a door whose endpoints are attached to two existing points."""
+    if point1 is point2 or (point1.x, point1.y) == (point2.x, point2.y):
+        return None
+
+    target = read_doors if load_active else doors
+    endpoint_pair = frozenset(((point1.x, point1.y), (point2.x, point2.y)))
+    if any(
+        frozenset(((door.x1, door.y1), (door.x2, door.y2))) == endpoint_pair
+        for door in target
+    ):
+        return None
+
+    door = Door(
+        x1=point1.x,
+        y1=point1.y,
+        x2=point2.x,
+        y2=point2.y,
+        state="close",
+    )
+    target.append(door)
+    draw_door(canvas, door)
+    if callable(on_changed):
+        on_changed()
+    return door
+
+def draw_line_door(canvas, window, load_active, on_changed=None):
     global doors
     if load_active:
         point = coordinates
@@ -29,13 +56,16 @@ def draw_line_door(canvas, window, load_active):
                 coord_point2 = (p_x, p_y)
 
         if coord_point1 and coord_point2:
-            door = Door(x1=coord_point1[0], y1=coord_point1[1], x2=coord_point2[0], y2=coord_point2[1], state="close")
-            if load_active:
-                read_doors.append(door)
-            else:
-                doors.append(door)
-            draw_door(canvas, door)
-            line_window.destroy()
+            first = next(p for p in point if p.name == point1)
+            second = next(p for p in point if p.name == point2)
+            if add_door_between_points(
+                canvas,
+                first,
+                second,
+                load_active,
+                on_changed=on_changed,
+            ) is not None:
+                line_window.destroy()
 
     # window for points name
     line_window = tk.Toplevel(window)
@@ -68,6 +98,10 @@ def draw_all_doors(canvas, doors):
     canvas.delete("door")
     for door in doors:
         draw_door(canvas, door)
+    if getattr(canvas, "_show_pir_fov", False):
+        from utils import refresh_pir_fov
+
+        refresh_pir_fov(canvas)
 
 
 def interaction_with_door(canvas, event, doors, *, render=True):

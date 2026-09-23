@@ -8,18 +8,26 @@ from sensor import (
     SmartMeterSensorAdapter,
     WeightSensorAdapter,
     SwitchSensorAdapter,
-    get_replay_temperature,
+    get_recorded_temperature,
     is_temperature_sensor_changing,
     prime_llm_cycle_for_sensor,
 )
-from utils import find_closest_sensor_within_fov, update_devices_consumption, find_closest_sensor_without_intersection, find_switch_sensors_by_doors, calculate_distance, update_sensor_color, update_temperature_sensor_color
+from utils import (
+    PIR_FOV_ANGLE,
+    PIR_MAX_DISTANCE,
+    calculate_distance,
+    find_closest_sensor_within_fov,
+    find_closest_sensor_without_intersection,
+    find_switch_sensors_by_doors,
+    update_devices_consumption,
+    update_sensor_color,
+    update_temperature_sensor_color,
+)
 from common import update_sensor_states
 from log import log_move, log_sensor_event, log_device_event, log_door_event, log_llm_cycle_event
 from house_state import HouseState
 from canvas_zoom import event_to_logical, to_canvas
 
-MAX_DISTANCE = 230
-FOV_ANGLE = 60
 SMARTMETER_ACTIVE_THRESHOLD_W = 1.0
 
 PER_SECOND_SENSOR_SAMPLING = True
@@ -104,7 +112,9 @@ def _collect_temperature_updates(
             active_devices=d_devices,
             render=False,
         )
-        reference_state = get_replay_temperature(sensor_name, current_datetime)
+        # A replay profile may come from another date. Only exact source-minute
+        # measurements are allowed in the series labelled as real.
+        reference_state = get_recorded_temperature(sensor_name, current_datetime)
         updates.append((sensor, sensor_name, float(new_state), reference_state))
 
     return updates
@@ -357,7 +367,14 @@ def _handle_pir_interaction(
     click_pos,
 ):
     pir_adapter = PIRSensorAdapter()
-    closest_sensor_pir = find_closest_sensor_within_fov(click_pos, s_sensors, walls, d_doors, MAX_DISTANCE, FOV_ANGLE)
+    closest_sensor_pir = find_closest_sensor_within_fov(
+        click_pos,
+        s_sensors,
+        walls,
+        d_doors,
+        PIR_MAX_DISTANCE,
+        PIR_FOV_ANGLE,
+    )
     next_active = []
 
     for sensor in sim_state["active_pir_sensors"]:

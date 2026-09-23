@@ -2,8 +2,11 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
-from app.io.scenario import _convert_timestamp, _parse_json_to_records
+from app.io.scenario import _convert_timestamp, _parse_json_to_records, _write_scenario
+from models import Point, Wall
 from read import read_coordinates_from_file, read_room_overrides
 
 
@@ -74,6 +77,28 @@ room-abc123,Kitchen
         self.assertEqual(devices[0].consumption_direction, 1)
         self.assertEqual(doors[0].state, "open")
         self.assertEqual(read_room_overrides, {"room-abc123": "Kitchen"})
+
+    def test_edited_runtime_wall_geometry_is_saved(self):
+        runtime_points = [Point("a", 25, 30), Point("b", 125, 30)]
+        edited_wall = Wall(25, 30, 125, 30)
+        ctx = SimpleNamespace(load_active=False, room_overrides={})
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "edited.csv"
+            with (
+                patch("app.io.scenario.ask_confirmation", return_value=True),
+                patch("app.io.scenario.messagebox.showinfo"),
+                patch("app.io.scenario.points", runtime_points),
+                patch("app.io.scenario.sensors", []),
+                patch("app.io.scenario.devices", []),
+                patch("app.io.scenario.doors", []),
+                patch("wall.walls_coordinates", [edited_wall]),
+            ):
+                _write_scenario(ctx, str(path))
+            saved = path.read_text(encoding="utf-8")
+
+        self.assertIn("Walls\n", saved.replace("\r\n", "\n"))
+        self.assertIn("a,b", saved)
 
 
 if __name__ == "__main__":

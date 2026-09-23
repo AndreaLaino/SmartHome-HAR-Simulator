@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os, csv, shutil, json, glob
-from tkinter import messagebox, simpledialog
+from tkinter import messagebox
 from app.io.safe_dialog import ask_open_file, ask_open_files, ask_save_file, ask_directory
 import tkinter as tk
 from tkinter import ttk
@@ -16,7 +16,9 @@ from read import (
 )
 from app.context import AppContext
 from app.logging_setup import setup_logging
+from app.confirmations import ask_confirmation
 from app.save_paths import ensure_houses_dir, ensure_saves_dir, ensure_devices_dir
+from app.ui.theme import apply_theme_tree, get_widget_theme_mode
 from models import Point, Sensor, Device, Door, Wall
 
 
@@ -288,6 +290,15 @@ def _load_scenario(ctx: AppContext, canvas, filename: str) -> None:
     draw_sensors(ctx.read_sensors, canvas)
     draw_devices(ctx.read_devices, canvas)
     draw_doors(ctx.read_doors, canvas)
+    from read import read_walls_coordinates
+    from utils import refresh_pir_fov, set_pir_fov_sources
+    set_pir_fov_sources(
+        canvas,
+        ctx.read_sensors,
+        read_walls_coordinates,
+        ctx.read_doors,
+    )
+    refresh_pir_fov(canvas)
     from app.ui.rooms import refresh_rooms
     refresh_rooms(ctx, draw=True)
 
@@ -304,19 +315,30 @@ def _load_scenario(ctx: AppContext, canvas, filename: str) -> None:
 
 def load_scenario_from_file(ctx: AppContext, canvas) -> None:
     """Load the default save file: 'saved.csv'."""
-    default_file = "saved.csv"
-    if not os.path.exists(default_file):
-        messagebox.showwarning("File not found", f"'{default_file}' not found.")
-        return
+    load_scenario_from_path(ctx, canvas, "saved.csv")
+
+
+def load_scenario_from_path(ctx: AppContext, canvas, filename: str) -> bool:
+    """Load a scenario from an explicit path without opening a file dialog."""
+    filename = os.path.abspath(os.fspath(filename))
+    if not os.path.isfile(filename):
+        messagebox.showwarning("File not found", f"'{filename}' not found.")
+        return False
 
     # Clear the current scenario (no prompt – this is a "quick load")
     _clear_scenario(ctx, canvas)
-    _load_scenario(ctx, canvas, default_file)
+    _load_scenario(ctx, canvas, filename)
+    return True
 
 
 def _write_scenario(ctx: AppContext, filename: str) -> None:
     """Write the current scenario to the given file."""
-    if not messagebox.askyesno("Save", f"Do you want to save to:\n{filename}?"):
+    if not ask_confirmation(
+        ctx,
+        "confirm_save_scenario",
+        "Save",
+        f"Do you want to save to:\n{filename}?",
+    ):
         return
 
     with open(filename, "w", newline='') as csvfile:
@@ -332,7 +354,15 @@ def _write_scenario(ctx: AppContext, filename: str) -> None:
         # Walls
         csvwriter.writerow([])
         csvwriter.writerow(["Walls"])
-        wall_source = walls if not ctx.load_active else ctx.read_walls
+        # Use the geometric wall models so moved/resized walls are persisted.
+        # ``walls`` is the legacy point-name pair list used while constructing
+        # new walls and does not contain editable coordinates.
+        if ctx.load_active:
+            wall_source = ctx.read_walls
+        else:
+            from wall import walls_coordinates
+
+            wall_source = walls_coordinates
         point_source = points if not ctx.load_active else ctx.r_points
         for wall in wall_source:
             names = _wall_to_point_names(wall, point_source)
@@ -404,8 +434,15 @@ def _clear_scenario(ctx: AppContext, canvas) -> None:
     for tag in [
         'point', 'wall', 'sensor', 'line', 'device', 'door', 'fov',
         'room_overlay', 'map_tooltip', 'label_leader',
+        'device_selection', 'object_selection', 'selection_marquee',
+        'drag_preview', 'segment_placement_preview',
     ]:
         canvas.delete(tag)
+    ctx._selected_device = None
+    ctx._selected_object = None
+    ctx._selected_objects = []
+    ctx._map_drag_state = None
+    ctx._movement_undo_stack = []
 
     for lst in [points, walls, sensors, devices, doors,
                 ctx.r_points, ctx.read_walls, ctx.read_sensors, ctx.read_devices, ctx.read_doors]:
@@ -427,13 +464,19 @@ def _clear_scenario(ctx: AppContext, canvas) -> None:
     ctx.current_file = None
 
     logger.info("Scenario cleared from canvas and memory.")
+    activate_select = getattr(ctx, "_activate_canvas_select", None)
+    if callable(activate_select):
+        activate_select()
 
 
 def delete_scenario(ctx: AppContext, canvas) -> None:
     """Clear the current scenario from canvas and memory, with confirmation."""
-    if not messagebox.askyesno(
-        "Delete",
-        "Are you sure you want to delete the current scenario?\nAll unsaved changes will be lost."
+    if not ask_confirmation(
+        ctx,
+        "confirm_delete_scenario",
+        "Clear current home",
+        "Are you sure you want to clear the current home?\n"
+        "All unsaved changes will be lost.",
     ):
         return
 
@@ -501,11 +544,55 @@ def _ask_choice(parent, title: str, label: str, choices: list[str], default: str
     tk.Button(btns, text="OK", command=ok).pack(side="left", padx=5)
     tk.Button(btns, text="Cancel", command=cancel).pack(side="left")
 
+    apply_theme_tree(win, get_widget_theme_mode(parent or win))
     win.wait_window()
     return out["value"]
 
 
-def import_csv_from_s3(parent=None) -> None:
+def _ask_string(
+    parent,
+    title: str,
+    label: str,
+    initial: str = "",
+) -> str | None:
+    """Small theme-aware replacement for the default light-only string dialog."""
+    win = tk.Toplevel(parent) if parent else tk.Toplevel()
+    win.title(title)
+    win.resizable(False, False)
+    if parent:
+        win.transient(parent)
+    win.grab_set()
+
+    tk.Label(win, text=label, justify="left").pack(
+        anchor="w",
+        padx=14,
+        pady=(14, 6),
+    )
+    value = tk.StringVar(value=initial)
+    entry = tk.Entry(win, textvariable=value, width=42)
+    entry.pack(fill="x", padx=14, pady=(0, 10), ipady=4)
+    result = {"value": None}
+
+    def accept(_event=None):
+        result["value"] = value.get()
+        win.destroy()
+
+    def cancel(_event=None):
+        win.destroy()
+
+    buttons = tk.Frame(win)
+    buttons.pack(anchor="e", padx=14, pady=(0, 14))
+    tk.Button(buttons, text="OK", command=accept).pack(side="left", padx=(0, 6))
+    tk.Button(buttons, text="Cancel", command=cancel).pack(side="left")
+    win.bind("<Return>", accept)
+    win.bind("<Escape>", cancel)
+    win.protocol("WM_DELETE_WINDOW", cancel)
+    apply_theme_tree(win, get_widget_theme_mode(parent or win))
+    entry.focus_set()
+    win.wait_window()
+    return result["value"]
+
+def import_csv_from_s3(parent=None, ctx=None) -> None:
     """Import sensor CSV files from AWS S3 instead of local filesystem."""
     from app.io.aws_import import AWSS3Importer, BOTO3_AVAILABLE
 
@@ -565,6 +652,7 @@ def import_csv_from_s3(parent=None) -> None:
     tk.Button(btn_frm, text="Connect", command=connect, width=10).pack(side="left", padx=5)
     tk.Button(btn_frm, text="Cancel", command=cancel, width=10).pack(side="left", padx=5)
 
+    apply_theme_tree(conn_win, get_widget_theme_mode(parent or conn_win))
     conn_win.wait_window()
 
     importer = result.get("importer")
@@ -583,10 +671,10 @@ def import_csv_from_s3(parent=None) -> None:
                 default=buckets[0]
             )
         else:
-            bucket = simpledialog.askstring(
+            bucket = _ask_string(
+                parent,
                 "Enter Bucket Name",
                 "Enter the S3 bucket name:",
-                parent=parent
             )
     except Exception as e:
         if "AccessDenied" in str(e) or "not authorized" in str(e):
@@ -595,10 +683,10 @@ def import_csv_from_s3(parent=None) -> None:
                 "Your IAM user lacks 's3:ListAllMyBuckets' permission.\n\n"
                 "Please enter the bucket name manually."
             )
-            bucket = simpledialog.askstring(
+            bucket = _ask_string(
+                parent,
                 "Enter Bucket Name",
                 "Enter the S3 bucket name:",
-                parent=parent
             )
         else:
             messagebox.showerror("Error", f"Failed to list buckets:\n{str(e)}")
@@ -649,6 +737,7 @@ def import_csv_from_s3(parent=None) -> None:
     tk.Button(btn_frame, text="Import Selected", command=select_files, width=15).pack(side="left", padx=5)
     tk.Button(btn_frame, text="Cancel", command=sel_win.destroy, width=10).pack(side="left", padx=5)
 
+    apply_theme_tree(sel_win, get_widget_theme_mode(parent or sel_win))
     sel_win.wait_window()
 
     if not selected_files:
@@ -675,10 +764,10 @@ def import_csv_from_s3(parent=None) -> None:
     prefix = prefix_by_type[sim_type]
 
     # Base name (same as local import)
-    base_name = simpledialog.askstring(
+    base_name = _ask_string(
+        parent,
         "Name",
         "Enter the name (e.g., t1, t2, sm_pc, ...)",
-        parent=parent
     )
     if not base_name:
         return
@@ -698,13 +787,24 @@ def import_csv_from_s3(parent=None) -> None:
 
     # Warn if too many files
     if len(selected_files) > 100:
-        proceed = messagebox.askyesno(
-            "Many Files Selected",
+        warning = (
             f"You selected {len(selected_files)} files.\n"
-            f"This may take several minutes to download.\n\n"
-            f"Continue?",
-            parent=parent
+            "This may take several minutes to download.\n\n"
+            "Continue?"
         )
+        if ctx is not None:
+            proceed = ask_confirmation(
+                ctx,
+                "confirm_large_import",
+                "Many Files Selected",
+                warning,
+            )
+        else:
+            proceed = messagebox.askyesno(
+                "Many Files Selected",
+                warning,
+                parent=parent,
+            )
         if not proceed:
             return
 
@@ -729,6 +829,7 @@ def import_csv_from_s3(parent=None) -> None:
     status_label = tk.Label(progress_win, text="", fg="blue")
     status_label.pack(pady=5)
 
+    apply_theme_tree(progress_win, get_widget_theme_mode(parent or progress_win))
     progress_win.update()
 
     for idx, s3_key in enumerate(selected_files):
@@ -767,10 +868,10 @@ def import_csv_from_s3(parent=None) -> None:
     # Ask for IP address if SmartMeter
     device_ip = ""
     if sim_type == "Smart Meter":
-        device_ip = simpledialog.askstring(
+        device_ip = _ask_string(
+            parent,
             "IP Address",
             f"Enter the IP address for device '{base_name}' (optional):",
-            parent=parent
         )
         device_ip = (device_ip or "").strip()
 
@@ -830,10 +931,10 @@ def import_csv(parent=None) -> None:
     prefix = prefix_by_type[sim_type]
 
     # 3) name
-    base_name = simpledialog.askstring(
+    base_name = _ask_string(
+        parent,
         "Name",
         "Enter the name (e.g., t1, t2, sm_pc, ...)",
-        parent=parent
     )
     if not base_name:
         return

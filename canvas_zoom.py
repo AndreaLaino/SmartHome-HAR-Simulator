@@ -7,6 +7,99 @@ ZOOM_STEP = 1.2
 TRACKPAD_ZOOM_STEP = 1.025
 TRACKPAD_INTERVAL_MS = 16
 
+GRID_WIDTH = 1038
+GRID_HEIGHT = 811
+GRID_SPACING = 25
+GRID_BACKGROUND = "white"
+GRID_LINE_COLOR = "#c7c7c7"
+GRID_TAG = "background_grid"
+
+
+def draw_grid_background(
+    canvas,
+    *,
+    width: int = GRID_WIDTH,
+    height: int = GRID_HEIGHT,
+    spacing: int = GRID_SPACING,
+) -> None:
+    """Draw a native grid that always covers the canvas viewport."""
+    if width <= 0 or height <= 0 or spacing <= 0:
+        raise ValueError("Grid dimensions and spacing must be positive")
+
+    def redraw(zoom=None) -> None:
+        current_zoom = get_zoom(canvas) if zoom is None else float(zoom)
+        background = str(getattr(canvas, "_grid_background", GRID_BACKGROUND))
+        line_color = str(getattr(canvas, "_grid_line_color", GRID_LINE_COLOR))
+
+        # Exclude the previous grid before measuring actual scenario content.
+        canvas.delete(GRID_TAG)
+        content_bbox = canvas.bbox("all")
+        content_width = max(0, content_bbox[2]) if content_bbox else 0
+        content_height = max(0, content_bbox[3]) if content_bbox else 0
+        render_width = max(
+            float(width) * current_zoom,
+            float(canvas.winfo_width()),
+            float(content_width),
+        )
+        render_height = max(
+            float(height) * current_zoom,
+            float(canvas.winfo_height()),
+            float(content_height),
+        )
+        rendered_spacing = float(spacing) * current_zoom
+
+        canvas.create_rectangle(
+            0,
+            0,
+            render_width,
+            render_height,
+            fill=background,
+            outline="",
+            width=0,
+            tags=(GRID_TAG,),
+        )
+        if bool(getattr(canvas, "_show_grid", True)):
+            line_number = 1
+            while line_number * rendered_spacing < render_width:
+                x = line_number * rendered_spacing
+                canvas.create_line(
+                    x,
+                    0,
+                    x,
+                    render_height,
+                    fill=line_color,
+                    width=1,
+                    tags=(GRID_TAG,),
+                )
+                line_number += 1
+            line_number = 1
+            while line_number * rendered_spacing < render_height:
+                y = line_number * rendered_spacing
+                canvas.create_line(
+                    0,
+                    y,
+                    render_width,
+                    y,
+                    fill=line_color,
+                    width=1,
+                    tags=(GRID_TAG,),
+                )
+                line_number += 1
+
+        canvas.tag_lower(GRID_TAG)
+        canvas.configure(scrollregion=(0, 0, render_width, render_height))
+
+    canvas._redraw_zoom_background = redraw
+    if not getattr(canvas, "_grid_resize_bound", False):
+        canvas.bind(
+            "<Configure>",
+            lambda _event: canvas._redraw_zoom_background(),
+            add="+",
+        )
+        canvas._grid_resize_bound = True
+
+    redraw()
+
 
 def get_zoom(canvas) -> float:
     return float(getattr(canvas, "_zoom_factor", 1.0) or 1.0)
@@ -24,6 +117,22 @@ def to_canvas_length(canvas, value: float) -> float:
 def event_to_logical(canvas, event) -> tuple[float, float]:
     zoom = get_zoom(canvas)
     return canvas.canvasx(event.x) / zoom, canvas.canvasy(event.y) / zoom
+
+
+def snap_logical_position(
+    canvas,
+    x: float,
+    y: float,
+    *,
+    spacing: int = GRID_SPACING,
+) -> tuple[int, int]:
+    """Snap a logical position when the canvas grid-snap preference is active."""
+    if not bool(getattr(canvas, "_snap_to_grid", False)):
+        return int(round(x)), int(round(y))
+    return (
+        int(round(float(x) / spacing) * spacing),
+        int(round(float(y) / spacing) * spacing),
+    )
 
 
 def canvas_to_logical(canvas, x: float, y: float) -> tuple[float, float]:
@@ -178,10 +287,17 @@ def reset_zoom(canvas) -> float:
     return zoom
 
 
+def set_canvas_cursor(canvas, cursor: str) -> None:
+    """Set the persistent tool cursor that temporary gestures should restore."""
+    canvas._tool_cursor = cursor
+    canvas.configure(cursor=cursor)
+
+
 def bind_canvas_pan(canvas) -> None:
-    """Pan with a two-finger/secondary click drag without using Button-1."""
+    """Pan with the middle mouse button without using left or right click."""
     def start_pan(event):
         canvas.scan_mark(event.x, event.y)
+        canvas._pan_previous_cursor = getattr(canvas, "_tool_cursor", "")
         canvas.configure(cursor="fleur")
         return "break"
 
@@ -190,11 +306,11 @@ def bind_canvas_pan(canvas) -> None:
         return "break"
 
     def stop_pan(_event):
-        canvas.configure(cursor="")
+        canvas.configure(
+            cursor=getattr(canvas, "_pan_previous_cursor", "")
+        )
         return "break"
 
-    # Depending on macOS/Tk settings, a two-finger click is Button-2 or Button-3.
-    for button in (2, 3):
-        canvas.bind(f"<ButtonPress-{button}>", start_pan)
-        canvas.bind(f"<B{button}-Motion>", drag_pan)
-        canvas.bind(f"<ButtonRelease-{button}>", stop_pan)
+    canvas.bind("<ButtonPress-2>", start_pan)
+    canvas.bind("<B2-Motion>", drag_pan)
+    canvas.bind("<ButtonRelease-2>", stop_pan)

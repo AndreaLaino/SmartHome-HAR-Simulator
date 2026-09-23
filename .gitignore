@@ -76,6 +76,8 @@ llm_smartmeter_profiles.json
 
 # Local hardware/user configuration
 /sensor_map.json
+/settings.json
+/settings.json.tmp
 
 # User-created scenario files
 /houses/

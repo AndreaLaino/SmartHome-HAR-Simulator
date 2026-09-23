@@ -12,6 +12,7 @@ from app.save_paths import (
     get_or_create_current_save_session,
     get_session_subdir,
 )
+from app.ui.theme import apply_theme_tree, get_widget_theme_mode
 
 
 def _activity_log_state(log_state: dict | None) -> dict:
@@ -144,12 +145,20 @@ def show_activity_log(log_state):
         messagebox.showinfo("Success", f"Activity log saved in:\n{file_path}")
 
     tk.Button(log_window, text="Save activity log", command=save).pack(pady=10)
+    apply_theme_tree(log_window, get_widget_theme_mode(log_window))
 
 
 # sensor log
 
-def show_log(canvas, sensor_states, load_active, log_state):
+def show_log(
+    canvas,
+    sensor_states,
+    load_active,
+    log_state,
+    preselected_sensors=None,
+):
     state = _activity_log_state(log_state)
+    theme_mode = get_widget_theme_mode(canvas)
     def _align_len(lst, target_len, fill=None):
         #Makes 'lst' long 'target_len' by filling with 'fill' or cutting
         if lst is None:
@@ -333,15 +342,20 @@ def show_log(canvas, sensor_states, load_active, log_state):
             action_bar.pack(fill="x", padx=10, pady=(0, 10))
             ttk.Button(action_bar, text="Save activity log", command=save_activity_log_tab).pack(side="right")
 
+        apply_theme_tree(win, theme_mode)
+
     # selection window for sensors
     log_window = tk.Toplevel()
     log_window.title("generate log")
 
     tk.Label(log_window, text="select the sensors for which the log should be generated:").pack(pady=10)
 
+    initially_selected = set(preselected_sensors or [])
     sensor_selection = {}
     for sensor in sensor_states.keys():
-        sensor_selection[sensor] = tk.BooleanVar(value=False)
+        sensor_selection[sensor] = tk.BooleanVar(
+            value=sensor in initially_selected
+        )
 
     tk.Button(
         log_window,
@@ -373,6 +387,7 @@ def show_log(canvas, sensor_states, load_active, log_state):
     buttons_frame.pack(pady=10)
     tk.Button(buttons_frame, text="Open Preview", command=open_detail_window).grid(row=0, column=0, padx=5)
     tk.Button(buttons_frame, text="Save directly", command=save_selected_logs).grid(row=0, column=1, padx=5)
+    apply_theme_tree(log_window, theme_mode)
 
 def start_interaction_log_session(house_state, session_label: str = ""):
     state = _interaction_log_state(house_state)

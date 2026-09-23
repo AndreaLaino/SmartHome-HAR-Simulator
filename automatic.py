@@ -5,6 +5,7 @@ import os
 import pandas as pd
 
 from app.context import AppContext
+from app.ui.theme import apply_theme_tree
 
 from graph import show_graphs_auto
 from models import Sensor, Device
@@ -166,6 +167,10 @@ def generate_graphs(ctx: AppContext):
             selected_keys=selected_keys,
             target_frame=state.get("graph_canvas_frame")
         )
+        apply_theme_tree(
+            state.get("graph_canvas_frame"),
+            ctx.preferences,
+        )
 
         graph_area_obj_local = state.get("graph_area_obj")
         if graph_area_obj_local is not None:
@@ -305,6 +310,10 @@ def generate_graphs_from_csv_ctx(ctx: AppContext):
             sensor_states=sensor_states,
             selected_keys=selected_keys,
             target_frame=state.get("graph_canvas_frame")
+        )
+        apply_theme_tree(
+            state.get("graph_canvas_frame"),
+            ctx.preferences,
         )
 
         graph_area_obj = state.get("graph_area_obj")
@@ -526,3 +535,4 @@ def launch_automatic_interface(ctx: AppContext):
             state["graph_area_obj"] = area2
 
     nb.bind("<<NotebookTabChanged>>", on_tab_change)
+    apply_theme_tree(auto_frame, ctx.preferences)

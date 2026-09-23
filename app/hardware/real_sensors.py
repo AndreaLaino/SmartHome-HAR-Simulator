@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import glob
 import logging
+import math
 import os
 import threading
 import time
@@ -73,7 +74,12 @@ def _df_from_rows(rows: list[dict], rule: str = "1min", agg: str = "median") -> 
         return pd.DataFrame()
     df = pd.DataFrame(rows)
     df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
-    df = df.dropna(subset=["timestamp"]).sort_values("timestamp").set_index("timestamp")
+    df["value"] = pd.to_numeric(df.get("value"), errors="coerce")
+    df = df.dropna(subset=["timestamp", "value"])
+    df = df[df["value"].map(math.isfinite)]
+    if df.empty:
+        return pd.DataFrame()
+    df = df.sort_values("timestamp").set_index("timestamp")
     if agg == "max":
         return df.resample(rule).max()
     return df.resample(rule).median()
@@ -182,17 +188,23 @@ class DHTLogger:
         while not self._stop.is_set():
             try:
                 temperature, humidity = self._read_once()
-                ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                with open(self.csv_path, "a", newline="", encoding="utf-8") as f:
-                    csv.writer(f).writerow(
-                        [
-                            ts,
-                            self.label,
-                            self.gpio,
-                            "" if temperature is None else temperature,
-                            "" if humidity is None else humidity,
-                        ]
-                    )
+                temperature = temperature if temperature is not None and math.isfinite(temperature) else None
+                humidity = humidity if humidity is not None and math.isfinite(humidity) else None
+                # Do not manufacture timestamped rows when the sensor could not
+                # be read (for example, when running the desktop app without a
+                # DHT library or connected Raspberry Pi).
+                if temperature is not None or humidity is not None:
+                    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    with open(self.csv_path, "a", newline="", encoding="utf-8") as f:
+                        csv.writer(f).writerow(
+                            [
+                                ts,
+                                self.label,
+                                self.gpio,
+                                "" if temperature is None else temperature,
+                                "" if humidity is None else humidity,
+                            ]
+                        )
             except Exception as exc:
                 logger.warning("[DHT '%s'] loop error: %s", self.label, exc)
             for _ in range(self.interval):

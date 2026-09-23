@@ -12,6 +12,12 @@ from canvas_zoom import to_canvas, to_canvas_length
 # Cache to avoid re-reading CSVs repeatedly when drawing sensors.
 _REAL_TEMP_CACHE: dict[str, bool] = {}
 
+PIR_MAX_DISTANCE = 230
+PIR_FOV_ANGLE = 60
+PIR_FOV_TAG = "fov"
+PIR_FOV_FILL = (255, 231, 163)
+PIR_FOV_OUTLINE = (210, 139, 0)
+
 
 def _is_real_temperature_sensor(sensor_name: str, logs_dir: str = "devices") -> bool:
     """Return True if this Temperature sensor is backed by real DHT logs.
@@ -70,9 +76,202 @@ def _temperature_color(sensor_name: str, changing: bool = False) -> str:
     return "green" if changing else "red"
 
 
+def _ray_segment_hit_fraction(
+    origin_x: float,
+    origin_y: float,
+    ray_x: float,
+    ray_y: float,
+    segment,
+) -> Optional[float]:
+    """Return the nearest 0..1 position where a finite ray hits a segment."""
+    try:
+        segment_x1 = float(segment.x1)
+        segment_y1 = float(segment.y1)
+        segment_x2 = float(segment.x2)
+        segment_y2 = float(segment.y2)
+    except (AttributeError, TypeError, ValueError):
+        return None
+
+    ray_dx = ray_x - origin_x
+    ray_dy = ray_y - origin_y
+    segment_dx = segment_x2 - segment_x1
+    segment_dy = segment_y2 - segment_y1
+    offset_x = segment_x1 - origin_x
+    offset_y = segment_y1 - origin_y
+    denominator = ray_dx * segment_dy - ray_dy * segment_dx
+    epsilon = 1e-9
+
+    if abs(denominator) <= epsilon:
+        # Parallel segments only intersect when they are collinear.
+        if abs(offset_x * ray_dy - offset_y * ray_dx) > epsilon:
+            return None
+        ray_length_squared = ray_dx * ray_dx + ray_dy * ray_dy
+        if ray_length_squared <= epsilon:
+            return None
+        fractions = sorted(
+            (
+                (offset_x * ray_dx + offset_y * ray_dy) / ray_length_squared,
+                (
+                    (segment_x2 - origin_x) * ray_dx
+                    + (segment_y2 - origin_y) * ray_dy
+                )
+                / ray_length_squared,
+            )
+        )
+        for fraction in fractions:
+            if epsilon < fraction <= 1.0 + epsilon:
+                return min(1.0, fraction)
+        return None
+
+    ray_fraction = (
+        offset_x * segment_dy - offset_y * segment_dx
+    ) / denominator
+    segment_fraction = (
+        offset_x * ray_dy - offset_y * ray_dx
+    ) / denominator
+    if epsilon < ray_fraction <= 1.0 + epsilon and -epsilon <= segment_fraction <= 1.0 + epsilon:
+        return min(1.0, ray_fraction)
+    return None
+
+
+def _clipped_pir_ray(sensor, angle_degrees: float, walls, doors) -> tuple[float, float]:
+    direction = math.radians(angle_degrees)
+    ray_x = float(sensor.x) + PIR_MAX_DISTANCE * math.cos(direction)
+    ray_y = float(sensor.y) + PIR_MAX_DISTANCE * math.sin(direction)
+    nearest_fraction = 1.0
+
+    obstacles = list(walls or [])
+    obstacles.extend(
+        door
+        for door in (doors or [])
+        if getattr(door, "is_closed", lambda: False)()
+    )
+    for obstacle in obstacles:
+        hit_fraction = _ray_segment_hit_fraction(
+            float(sensor.x),
+            float(sensor.y),
+            ray_x,
+            ray_y,
+            obstacle,
+        )
+        if hit_fraction is not None:
+            nearest_fraction = min(nearest_fraction, hit_fraction)
+
+    return (
+        float(sensor.x) + (ray_x - float(sensor.x)) * nearest_fraction,
+        float(sensor.y) + (ray_y - float(sensor.y)) * nearest_fraction,
+    )
+
+
+def _blend_with_white(color: tuple[int, int, int], opacity: float) -> str:
+    channels = [round(255 - (255 - channel) * opacity) for channel in color]
+    return "#" + "".join(f"{channel:02x}" for channel in channels)
+
+
+def _pir_fov_style(transparency: int) -> dict[str, str]:
+    transparency = max(0, min(100, int(transparency)))
+    opacity = 1.0 - transparency / 100.0
+    if opacity <= 0:
+        return {"fill": "", "outline": "#ffffff", "stipple": ""}
+
+    # Tk Canvas has no alpha channel. Combine its built-in density patterns
+    # with color blending so every slider position produces a useful preview.
+    if opacity > 0.75:
+        density, stipple = 1.0, ""
+    elif opacity > 0.5:
+        density, stipple = 0.75, "gray75"
+    elif opacity > 0.25:
+        density, stipple = 0.5, "gray50"
+    elif opacity > 0.125:
+        density, stipple = 0.25, "gray25"
+    else:
+        density, stipple = 0.125, "gray12"
+
+    color_opacity = min(1.0, opacity / density)
+    return {
+        "fill": _blend_with_white(PIR_FOV_FILL, color_opacity),
+        "outline": _blend_with_white(PIR_FOV_OUTLINE, opacity),
+        "stipple": stipple,
+    }
+
+
+def draw_pir_fov(canvas, sensor, walls=(), doors=()) -> None:
+    """Draw one PIR field of view, clipped by walls and closed doors."""
+    if str(getattr(sensor, "type", "")).upper() != "PIR":
+        return
+    if getattr(sensor, "direction", None) is None:
+        return
+
+    center_x, center_y = to_canvas(canvas, sensor.x, sensor.y)
+    start_angle = float(sensor.direction) - PIR_FOV_ANGLE / 2
+    points = [center_x, center_y]
+    for step in range(PIR_FOV_ANGLE + 1):
+        ray_x, ray_y = _clipped_pir_ray(
+            sensor,
+            start_angle + step,
+            walls,
+            doors,
+        )
+        points.extend(to_canvas(canvas, ray_x, ray_y))
+
+    style = _pir_fov_style(getattr(canvas, "_pir_fov_transparency", 50))
+    canvas.create_polygon(
+        *points,
+        width=1,
+        tags=(PIR_FOV_TAG, f"{sensor.name}_fov"),
+        **style,
+    )
+    # Keep the field visible above the grid, but behind walls and map markers.
+    canvas.tag_raise(PIR_FOV_TAG, "background_grid")
+
+
+def set_pir_fov_sources(canvas, sensors, walls=(), doors=()) -> None:
+    """Store the live scenario collections used by the PIR overlay."""
+    canvas._pir_fov_sensors = sensors
+    canvas._pir_fov_walls = walls
+    canvas._pir_fov_doors = doors
+
+
+def refresh_pir_fov(canvas) -> None:
+    """Redraw PIR overlays after sensors, walls, or doors change."""
+    canvas.delete(PIR_FOV_TAG)
+    if getattr(canvas, "_show_pir_fov", False):
+        sensors = getattr(canvas, "_pir_fov_sensors", ())
+        walls = getattr(canvas, "_pir_fov_walls", ())
+        doors = getattr(canvas, "_pir_fov_doors", ())
+        for sensor in sensors:
+            draw_pir_fov(canvas, sensor, walls, doors)
+    raise_overlay_labels(canvas)
+
+
+def set_pir_fov_transparency(canvas, transparency: int) -> int:
+    """Set an exact 0..100 transparency percentage on existing overlays."""
+    try:
+        requested = int(transparency)
+    except (TypeError, ValueError):
+        requested = 50
+    selected = max(0, min(100, requested))
+    canvas._pir_fov_transparency = selected
+    canvas.itemconfigure(PIR_FOV_TAG, **_pir_fov_style(selected))
+    return selected
+
+
+def set_pir_fov_visibility(
+    canvas,
+    sensors,
+    visible: bool,
+    walls=(),
+    doors=(),
+) -> None:
+    """Show or hide all wall-clipped PIR overlays on a canvas."""
+    set_pir_fov_sources(canvas, sensors, walls, doors)
+    canvas._show_pir_fov = bool(visible)
+    refresh_pir_fov(canvas)
+
+
 def draw_sensor(canvas, sensor):
     name, x, y, type_s, min_val, state = sensor.name, sensor.x, sensor.y, sensor.type, sensor.min_val, sensor.state
-    
+
     # Default coloring:
     #   - Temperature sensors: red by default; green only when changing
     #   - Other sensors: keep legacy behavior (green if above min)

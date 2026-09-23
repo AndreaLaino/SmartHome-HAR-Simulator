@@ -20,6 +20,7 @@ class AppContext:
     load_active: bool = False
     current_file: Optional[str] = None
     smartmeter_mode: str = "simulation"
+    preferences: dict[str, object] = field(default_factory=dict)
 
     r_points: list = field(default_factory=list)
     read_walls: list = field(default_factory=list)

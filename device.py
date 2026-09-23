@@ -5,7 +5,7 @@ from read import read_devices as device_file
 from models import Device
 from utils import raise_overlay_labels
 from label_layout import create_map_label
-from canvas_zoom import event_to_logical, to_canvas, to_canvas_length
+from canvas_zoom import event_to_logical, snap_logical_position, to_canvas, to_canvas_length
 
 devices = []
 
@@ -62,34 +62,40 @@ class DeviceDialog(simpledialog.Dialog):
 
 
 
-def add_device(canvas, event, load_active, on_changed=None):
+def add_device(canvas, event, load_active, on_changed=None, on_finished=None):
     logical_x, logical_y = event_to_logical(canvas, event)
-    x = int(logical_x)
-    y = int(logical_y)
-    dialog = DeviceDialog(canvas.master, "Add device")
-    if dialog.result:
-        name, type, power, min_consumption, max_consumption = dialog.result
-        device = Device(
-            name=name, 
-            x=x, 
-            y=y, 
-            type=type, 
-            power=power, 
-            state=0,  # OFF
-            min_consumption=min_consumption, 
-            max_consumption=max_consumption, 
-            current_consumption=0.0,
-            consumption_direction=1
-        )
+    x, y = snap_logical_position(canvas, logical_x, logical_y)
+    created = False
+    try:
+        dialog = DeviceDialog(canvas.master, "Add device")
+        if dialog.result:
+            name, type, power, min_consumption, max_consumption = dialog.result
+            device = Device(
+                name=name,
+                x=x,
+                y=y,
+                type=type,
+                power=power,
+                state=0,  # OFF
+                min_consumption=min_consumption,
+                max_consumption=max_consumption,
+                current_consumption=0.0,
+                consumption_direction=1,
+            )
 
-        if load_active:
-            device_file.append(device)
-        else:
-            devices.append(device)
+            if load_active:
+                device_file.append(device)
+            else:
+                devices.append(device)
 
-        draw_device(canvas, device)
-        if callable(on_changed):
-            on_changed()
+            draw_device(canvas, device)
+            created = True
+            if callable(on_changed):
+                on_changed()
+    finally:
+        if callable(on_finished):
+            on_finished(created)
+    return created
 
 
 

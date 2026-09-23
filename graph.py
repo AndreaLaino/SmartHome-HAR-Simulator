@@ -7,7 +7,7 @@ import re
 import tkinter as tk
 from tkinter import messagebox
 from tkinter import ttk
-from datetime import datetime, date
+from datetime import datetime
 from pathlib import Path
 import matplotlib.dates as mdates
 import matplotlib.pyplot as plt
@@ -27,6 +27,7 @@ from consumption_profiles import consumption_profiles
 from read import read_sensors, read_devices
 from device import devices
 from app.hardware import real_sensors
+from app.ui.theme import apply_theme_tree, get_widget_theme_mode, set_theme_role
 from models import Sensor, Device
 
 plt.rcParams.update({
@@ -999,44 +1000,49 @@ def _get_binding_ip(sensor_name: str) -> str | None:
     return None
 
 
-def _simple_rebase_to_day(df: pd.DataFrame, ref_day: date) -> pd.DataFrame:
-    """Rebase dataframe index to a reference day"""
-    if df is None or df.empty:
-        return df
-    df = df.copy()
-    new_index = [datetime.combine(ref_day, ts.time()) for ts in df.index]
-    df.index = new_index
-    df = df.sort_index()
-    return df
-
-
 def _align_real_series_to_simulation(df_real: pd.DataFrame, df_sim: pd.DataFrame) -> pd.DataFrame:
-    """Select the relevant real day, rebase it, and crop it to the simulation."""
+    """Keep only real samples whose original timestamps overlap the simulation."""
     if df_real is None or df_real.empty or df_sim is None or df_sim.empty:
         return pd.DataFrame()
 
-    df_real = df_real.dropna(subset=["value"]).sort_index()
-    if df_real.empty:
+    def _normalized_copy(frame: pd.DataFrame) -> pd.DataFrame:
+        normalized = frame.copy()
+        timestamps = []
+        for raw_timestamp in normalized.index:
+            try:
+                timestamp = pd.Timestamp(raw_timestamp)
+                if pd.isna(timestamp):
+                    timestamps.append(pd.NaT)
+                    continue
+                if timestamp.tzinfo is not None:
+                    timestamp = timestamp.tz_localize(None)
+                timestamps.append(timestamp)
+            except (TypeError, ValueError, OverflowError):
+                timestamps.append(pd.NaT)
+        normalized.index = pd.DatetimeIndex(timestamps)
+        normalized = normalized[~normalized.index.isna()].sort_index()
+        return normalized
+
+    df_real = _normalized_copy(df_real)
+    df_sim = _normalized_copy(df_sim)
+    if df_real.empty or df_sim.empty or "value" not in df_real.columns:
         return pd.DataFrame()
 
-    ref_day = df_sim.index[0].date()
-    available_days = sorted(set(df_real.index.date))
-    if ref_day in available_days:
-        source_day = ref_day
-    else:
-        previous_days = [day for day in available_days if day <= ref_day]
-        source_day = previous_days[-1] if previous_days else available_days[0]
-
-    selected = df_real[df_real.index.date == source_day]
-    selected = _simple_rebase_to_day(selected, ref_day)
-    sim_min = df_sim.index[0]
-    sim_max = df_sim.index[-1]
-    return selected[(selected.index >= sim_min) & (selected.index <= sim_max)]
+    sim_min = df_sim.index.min()
+    sim_max = df_sim.index.max()
+    overlapping = df_real[(df_real.index >= sim_min) & (df_real.index <= sim_max)]
+    if overlapping.empty or overlapping["value"].dropna().empty:
+        return pd.DataFrame()
+    # Preserve NaN minutes so Matplotlib draws a visible break for missing DHT
+    # data instead of connecting two measurements across an outage.
+    return overlapping
 
 
 # Graphic design (manual)
 
-def show_graphs(canvas, sensor_states):
+def show_graphs(canvas, sensor_states, preselected_sensors=None):
+    theme_mode = get_widget_theme_mode(canvas)
+
     def generate_graph(sensor, sensor_data, frame):
         fig, ax = plt.subplots(figsize=(14, 6), facecolor="white")
         ax.set_facecolor("white")
@@ -1075,12 +1081,8 @@ def show_graphs(canvas, sensor_states):
         df_real = pd.DataFrame()
         real_source = "none"
         if sensor_type == "Temperature":
-            df_real = _recorded_real_temperature_series(time_list, sensor_data)
-            if not df_real.empty:
-                real_source = "simulation"
-            else:
-                df_real = _load_real_temperature_series(sensor)
-                real_source = "CSV" if not df_real.empty else "none"
+            df_real = _load_real_temperature_series(sensor)
+            real_source = "CSV" if not df_real.empty else "none"
         elif sensor_type in ("PIR", "Switch", "Weight"):
             kind = sensor_type.lower()
             binding = _get_binding_gpio(sensor, kind)
@@ -1091,9 +1093,13 @@ def show_graphs(canvas, sensor_states):
             # Smart Meter "real" overlay is intentionally disabled.
             df_real = pd.DataFrame()
 
-        # Rebase real data to match the simulated timeline.
-        if real_source != "simulation" and not df_real.empty and not df.empty:
+        # A real curve is valid only where its original timestamps overlap the
+        # simulation. Historical/future profiles may drive the simulator, but
+        # must not be relabelled as measurements from the simulated date.
+        if not df_real.empty and not df.empty:
             df_real = _align_real_series_to_simulation(df_real, df)
+            if df_real.empty:
+                real_source = "none"
 
         if sensor_type == "Temperature":
             print(f"[TEMP GRAPH] {sensor}: {len(df_real)} real samples (source: {real_source})")
@@ -1152,6 +1158,7 @@ def show_graphs(canvas, sensor_states):
             fig.tight_layout()
 
         canvas_plot = FigureCanvasTkAgg(fig, master=frame)
+        set_theme_role(canvas_plot.get_tk_widget(), "plot")
         toolbar = NavigationToolbar2Tk(canvas_plot, frame)
         toolbar.update()
         toolbar.pack(side=tk.TOP, fill=tk.X)
@@ -1185,12 +1192,17 @@ def show_graphs(canvas, sensor_states):
             frame = ttk.Frame(scrollable_frame)
             frame.pack(fill="both", pady=10)
             generate_graph(sensor, sensor_states[sensor], frame)
+        apply_theme_tree(graph_window, theme_mode)
 
     selection_window = tk.Toplevel()
     selection_window.title("Select sensors")
 
     tk.Label(selection_window, text="Select the sensors for which to generate the graph:").pack(pady=10)
-    select_sensors = {s: tk.BooleanVar() for s in sensor_states.keys()}
+    initially_selected = set(preselected_sensors or [])
+    select_sensors = {
+        sensor: tk.BooleanVar(value=sensor in initially_selected)
+        for sensor in sensor_states.keys()
+    }
 
     select_all_var = tk.BooleanVar(value=False)
     def on_toggle_select_all():
@@ -1210,6 +1222,7 @@ def show_graphs(canvas, sensor_states):
         tk.Checkbutton(selection_window, text=sensor, variable=state).pack(anchor="w")
 
     tk.Button(selection_window, text="Generate Graphs", command=save_selected_logs).pack(pady=10)
+    apply_theme_tree(selection_window, theme_mode)
 
 # Graphic design (auto)
 
@@ -1250,12 +1263,8 @@ def show_graphs_auto(sensor_states, selected_keys, target_frame):
         df_real = pd.DataFrame()
         real_source = "none"
         if sensor_type == "Temperature":
-            df_real = _recorded_real_temperature_series(time_list, sensor_data)
-            if not df_real.empty:
-                real_source = "simulation"
-            else:
-                df_real = _load_real_temperature_series(sensor)
-                real_source = "CSV" if not df_real.empty else "none"
+            df_real = _load_real_temperature_series(sensor)
+            real_source = "CSV" if not df_real.empty else "none"
         elif sensor_type in ("PIR", "Switch", "Weight"):
             kind = sensor_type.lower()
             binding = _get_binding_gpio(sensor, kind)
@@ -1266,9 +1275,12 @@ def show_graphs_auto(sensor_states, selected_keys, target_frame):
             # Smart Meter "real" overlay is intentionally disabled.
             df_real = pd.DataFrame()
 
-        # Rebase real data to match the simulated timeline.
-        if real_source != "simulation" and not df_real.empty and not df.empty:
+        # Keep the original real timestamps; do not move another date onto the
+        # simulated day just to create an overlay.
+        if not df_real.empty and not df.empty:
             df_real = _align_real_series_to_simulation(df_real, df)
+            if df_real.empty:
+                real_source = "none"
 
         if sensor_type == "Temperature":
             print(f"[TEMP GRAPH] {sensor}: {len(df_real)} real samples (source: {real_source})")
@@ -1321,6 +1333,7 @@ def show_graphs_auto(sensor_states, selected_keys, target_frame):
             fig.tight_layout()
 
         canvas_plot = FigureCanvasTkAgg(fig, master=frame)
+        set_theme_role(canvas_plot.get_tk_widget(), "plot")
         toolbar = NavigationToolbar2Tk(canvas_plot, frame)
         toolbar.update()
         toolbar.pack(side=tk.TOP, fill=tk.X)
@@ -1341,3 +1354,4 @@ def show_graphs_auto(sensor_states, selected_keys, target_frame):
         card = ttk.Frame(container)
         card.pack(fill="x", pady=10)
         generate_graph(key, sensor_states[key], card)
+    apply_theme_tree(target_frame, get_widget_theme_mode(target_frame))

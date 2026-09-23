@@ -33,6 +33,8 @@ def draw_rooms(ctx: AppContext) -> None:
     if canvas is None:
         return
     canvas.delete("room_overlay")
+    if not bool(getattr(canvas, "_show_room_types", True)):
+        return
 
     colors = {
         "Bathroom": "#2980b9",

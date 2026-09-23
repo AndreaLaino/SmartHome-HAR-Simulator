@@ -10,11 +10,15 @@ class TimerApp:
         stop_callback=None,
         pause_callback=None,
         reset_callback=None,
+        start_time_mode="computer",
     ):
         self.start_callback = start_callback
         self.stop_callback = stop_callback
         self.pause_callback = pause_callback
         self.reset_callback = reset_callback
+        self.start_time_mode = (
+            "midnight" if start_time_mode == "midnight" else "computer"
+        )
 
         self.on_advance_step = None
 
@@ -30,12 +34,13 @@ class TimerApp:
         self.advance_remaining = 0  # Track remaining seconds to advance
         self.advance_speed = 1
         self.last_update = None
+        initial_start_hour = self._initial_start_hour()
 
         self.timer_frame.columnconfigure(0, weight=1)
 
         self.label = tk.Label(
             self.timer_frame,
-            text=f"Time: 00:00 \n Date: {self.current_date}",
+            text=f"Time: {initial_start_hour} \n Date: {self.current_date}",
             font=("Helvetica", 22),
             bg="lightgrey",
         )
@@ -53,8 +58,7 @@ class TimerApp:
         self.start_hour_entry = tk.Entry(self.timer_frame, font=("Helvetica", 16), width=15, justify="center")
         self.start_hour_entry.grid(row=2, column=0, pady=(10, 20), padx=20, ipady=10, sticky="ew")
 
-        # Insert current time formatted properly
-        self.start_hour_entry.insert(0, datetime.now().strftime("%H:%M"))
+        self.start_hour_entry.insert(0, initial_start_hour)
 
         # Start/Stop Button
         self.start_stop_button = tk.Button(self.timer_frame, text="Start", font=("Helvetica", 15, "bold"), command=self.start_stop)
@@ -87,6 +91,11 @@ class TimerApp:
         self.reset_button.grid(row=7, column=0, pady=(15, 25), padx=20, sticky="ew", ipady=15)
 
         self.update_timer()
+
+    def _initial_start_hour(self):
+        if getattr(self, "start_time_mode", "midnight") == "midnight":
+            return "00:00"
+        return datetime.now().strftime("%H:%M")
 
     def start_stop(self):
         if not self.is_running:
@@ -232,10 +241,13 @@ class TimerApp:
         self.last_update = None
 
         self.start_hour_entry.delete(0, tk.END)
-        self.start_hour_entry.insert(0, "00:00")
+        initial_start_hour = self._initial_start_hour()
+        self.start_hour_entry.insert(0, initial_start_hour)
 
         self.start_stop_button.config(text="Start")
-        self.label.config(text=f"Time: 00:00 \n Date: {self.current_date}")
+        self.label.config(
+            text=f"Time: {initial_start_hour} \n Date: {self.current_date}"
+        )
         try:
             from sensor import reset_llm_runtime_state, reset_temperature_runtime_state
             reset_llm_runtime_state()
