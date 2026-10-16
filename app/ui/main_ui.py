@@ -91,18 +91,6 @@ def _refresh_pir_overlay(ctx: AppContext) -> None:
 
 
 def _menu_add_point(ctx: AppContext):
-    manual_mode = getattr(ctx, "timer_app_instance", None) is not None
-
-    def placement_finished(_created):
-        if manual_mode:
-            restore_click = getattr(ctx, "_restore_manual_canvas_binding", None)
-            if callable(restore_click):
-                restore_click()
-                return
-        activate_select = getattr(ctx, "_activate_canvas_select", None)
-        if callable(activate_select):
-            activate_select()
-
     begin_placement_mode(
         ctx,
         "Add points",
@@ -110,7 +98,6 @@ def _menu_add_point(ctx: AppContext):
             ctx.canvas,
             event,
             ctx.load_active,
-            on_finished=placement_finished,
         ),
     )
 
@@ -118,23 +105,11 @@ def _menu_add_point(ctx: AppContext):
 def _menu_add_device(ctx: AppContext):
     from app.ui.rooms import refresh_rooms
 
-    manual_mode = getattr(ctx, "timer_app_instance", None) is not None
-
     def device_changed():
         rooms = refresh_rooms(ctx, draw=True)
         runtime_sources = getattr(ctx, "_manual_runtime_sources", None)
         if isinstance(runtime_sources, dict):
             runtime_sources["rooms"] = rooms
-
-    def placement_finished(_created):
-        if manual_mode:
-            restore_click = getattr(ctx, "_restore_manual_canvas_binding", None)
-            if callable(restore_click):
-                restore_click()
-                return
-        activate_select = getattr(ctx, "_activate_canvas_select", None)
-        if callable(activate_select):
-            activate_select()
 
     begin_placement_mode(
         ctx,
@@ -144,7 +119,6 @@ def _menu_add_device(ctx: AppContext):
             event,
             ctx.load_active,
             on_changed=device_changed,
-            on_finished=placement_finished,
         ),
     )
 
@@ -152,24 +126,12 @@ def _menu_add_device(ctx: AppContext):
 def _menu_add_sensor(ctx: AppContext):
     from app.ui.rooms import refresh_rooms
 
-    manual_mode = getattr(ctx, "timer_app_instance", None) is not None
-
     def sensor_changed():
         rooms = refresh_rooms(ctx, draw=True)
         runtime_sources = getattr(ctx, "_manual_runtime_sources", None)
         if isinstance(runtime_sources, dict):
             runtime_sources["rooms"] = rooms
         _refresh_pir_overlay(ctx)
-
-    def placement_finished(_created):
-        if manual_mode:
-            restore_click = getattr(ctx, "_restore_manual_canvas_binding", None)
-            if callable(restore_click):
-                restore_click()
-                return
-        activate_select = getattr(ctx, "_activate_canvas_select", None)
-        if callable(activate_select):
-            activate_select()
 
     begin_placement_mode(
         ctx,
@@ -179,7 +141,6 @@ def _menu_add_sensor(ctx: AppContext):
             event,
             ctx.load_active,
             on_changed=sensor_changed,
-            on_finished=placement_finished,
         ),
     )
 
@@ -187,24 +148,12 @@ def _menu_add_sensor(ctx: AppContext):
 def _menu_add_wall(ctx: AppContext):
     from app.ui.rooms import refresh_rooms
 
-    return_to_manual = getattr(ctx, "_canvas_mode", None) == "manual"
-
     def geometry_changed():
         rooms = refresh_rooms(ctx, draw=True)
         runtime_sources = getattr(ctx, "_manual_runtime_sources", None)
         if isinstance(runtime_sources, dict):
             runtime_sources["rooms"] = rooms
         _refresh_pir_overlay(ctx)
-
-    def placement_finished(_created):
-        if return_to_manual:
-            restore_click = getattr(ctx, "_restore_manual_canvas_binding", None)
-            if callable(restore_click):
-                restore_click()
-                return
-        activate_select = getattr(ctx, "_activate_canvas_select", None)
-        if callable(activate_select):
-            activate_select()
 
     def create_wall(point1, point2):
         wall = add_wall_between_points(
@@ -222,7 +171,6 @@ def _menu_add_wall(ctx: AppContext):
         ctx,
         "Add walls",
         create_wall,
-        on_finished=placement_finished,
         continuous=True,
     )
 
@@ -230,24 +178,12 @@ def _menu_add_wall(ctx: AppContext):
 def _menu_add_door(ctx: AppContext):
     from app.ui.rooms import refresh_rooms
 
-    return_to_manual = getattr(ctx, "_canvas_mode", None) == "manual"
-
     def geometry_changed():
         rooms = refresh_rooms(ctx, draw=True)
         runtime_sources = getattr(ctx, "_manual_runtime_sources", None)
         if isinstance(runtime_sources, dict):
             runtime_sources["rooms"] = rooms
         _refresh_pir_overlay(ctx)
-
-    def placement_finished(_created):
-        if return_to_manual:
-            restore_click = getattr(ctx, "_restore_manual_canvas_binding", None)
-            if callable(restore_click):
-                restore_click()
-                return
-        activate_select = getattr(ctx, "_activate_canvas_select", None)
-        if callable(activate_select):
-            activate_select()
 
     begin_point_segment_mode(
         ctx,
@@ -259,7 +195,7 @@ def _menu_add_door(ctx: AppContext):
             ctx.load_active,
             on_changed=geometry_changed,
         ),
-        on_finished=placement_finished,
+        continuous=True,
     )
 
 
@@ -328,7 +264,7 @@ def build_home_ui(ctx: AppContext):
     tool_palette.add_tool(
         "point",
         "point",
-        "Add point\nChoose this tool, then left-click the grid.",
+        "Add point\nLeft-click the grid; no name is required.",
         lambda: _menu_add_point(ctx),
     )
     tool_palette.add_tool(
@@ -347,13 +283,13 @@ def build_home_ui(ctx: AppContext):
     tool_palette.add_tool(
         "wall",
         "wall",
-        "Add wall\nClick two existing points; the wall stays attached to them.",
+        "Add wall\nClick two endpoints; points are created or reused automatically.",
         lambda: _menu_add_wall(ctx),
     )
     tool_palette.add_tool(
         "door",
         "door",
-        "Add door\nClick two existing points; the door stays attached to them.",
+        "Add door\nClick two endpoints; points are created or reused automatically.",
         lambda: _menu_add_door(ctx),
     )
 

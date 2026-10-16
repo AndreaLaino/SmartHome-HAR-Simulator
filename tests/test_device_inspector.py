@@ -268,6 +268,83 @@ class DeviceInspectorTests(unittest.TestCase):
         self.assertIsNone(ctx._segment_placement_state["first"])
         self.assertEqual(finished, [])
 
+    def test_segment_tool_creates_endpoints_and_reuses_nearby_points(self):
+        class Canvas:
+            _zoom_factor = 1.0
+            _snap_to_grid = False
+
+            def __init__(self):
+                self.bindings = {}
+
+            def bind(self, sequence, callback):
+                self.bindings[sequence] = callback
+
+            def unbind(self, sequence):
+                self.bindings.pop(sequence, None)
+
+            def canvasx(self, value):
+                return value
+
+            def canvasy(self, value):
+                return value
+
+            def delete(self, _tag):
+                pass
+
+            def create_line(self, *_coordinates, **_options):
+                return 1
+
+            def create_oval(self, *_coordinates, **_options):
+                return 1
+
+            def configure(self, **_options):
+                pass
+
+        canvas = Canvas()
+        created = []
+        ctx = SimpleNamespace(
+            canvas=canvas,
+            scenario_menu=None,
+            load_active=True,
+            r_points=[],
+            read_walls=[],
+            read_sensors=[],
+            read_devices=[],
+            read_doors=[],
+            _canvas_mode="select",
+            _tool_palette=None,
+            _canvas_mode_var=None,
+            _activate_canvas_select=lambda: None,
+        )
+
+        with (
+            patch("app.controllers.simulation.enable_all_menus"),
+            patch("point.points", []),
+            patch("point.coordinates", []),
+        ):
+            begin_point_segment_mode(
+                ctx,
+                "Add walls",
+                lambda first, second: created.append((first, second)) or object(),
+                continuous=True,
+            )
+            canvas.bindings["<Button-1>"](SimpleNamespace(x=10, y=20))
+            canvas.bindings["<Button-1>"](SimpleNamespace(x=100, y=40))
+
+            first_point = ctx.r_points[0]
+            canvas.bindings["<Button-1>"](SimpleNamespace(x=14, y=23))
+            canvas.bindings["<Button-1>"](SimpleNamespace(x=150, y=40))
+
+        self.assertEqual(len(ctx.r_points), 3)
+        self.assertEqual([(point.x, point.y) for point in ctx.r_points], [
+            (10, 20),
+            (100, 40),
+            (150, 40),
+        ])
+        self.assertEqual(len(created), 2)
+        self.assertIs(created[0][0], first_point)
+        self.assertIs(created[1][0], first_point)
+
     def test_left_click_selects_without_opening_the_action_menu(self):
         selection = MapSelection("device", object())
         canvas = SimpleNamespace(focus_set=lambda: None)

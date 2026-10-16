@@ -162,7 +162,7 @@ def autostart_bound_ip_loggers(sensor_states: dict):
 
     started = 0
     for sensor_name, cfg in mapping.items():
-        if sm_sensor_names and sensor_name not in sm_sensor_names:
+        if sensor_name not in sm_sensor_names:
             # Ignore stale entries not present in the currently loaded scenario.
             continue
 
@@ -209,7 +209,7 @@ def autostart_bound_gpio_loggers(sensor_states: dict):
 
     started = 0
     for sensor_name, cfg in mapping.items():
-        if valid_sensor_names and sensor_name not in valid_sensor_names:
+        if sensor_name not in valid_sensor_names:
             continue
         if not isinstance(cfg, dict) or cfg.get("by") not in ("dht", "gpio"):
             continue

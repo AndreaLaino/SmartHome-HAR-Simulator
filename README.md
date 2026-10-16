@@ -83,11 +83,14 @@ and device actions can also open associated graphs and CSV/log data. Scenario Ad
 commands are temporary placement tools, and starting Manual mode cancels any
 unfinished placement cleanly. The icon tool palette beside the canvas provides the
 selection, Manual, and construction tools; hover over an icon for its description.
-The wall and door tools work point-to-point: click an existing point, preview the
-segment, then click its second point. Moving an attached point moves every connected
-wall and door endpoint with it. The wall tool remains active after creating a wall;
-right-click or Escape cancels only its unfinished segment and starts a fresh one.
-Choose Select, Manual, or another construction tool to leave wall placement mode.
+The wall and door tools work directly on the canvas: click two endpoints to create
+a segment. Each endpoint reuses a nearby point or silently creates an anonymous
+point when needed. Standalone points are also created without a naming dialog.
+Moving an attached point moves every connected wall and door endpoint with it.
+Construction tools remain active after creating a point, sensor, device, wall, or
+door so that several objects can be placed in succession. For walls and doors,
+right-click or Escape cancels only the unfinished segment and starts a fresh one.
+Choose Select, Manual, or another construction tool to leave placement mode.
 The persistent **Grid mode (snap all objects)** setting aligns points, sensors,
 devices, walls, and doors to the 25-unit grid during placement, movement, resize,
 and paste operations. **Show grid** controls only the visible grid lines, so the

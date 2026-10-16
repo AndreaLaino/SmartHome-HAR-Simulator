@@ -80,11 +80,22 @@ def derive_device_id(device_name: str, rules: Optional[List[Tuple[str, str]]] = 
             return dev_id
     return default
 
+
+def _first_not_none(*values):
+    for value in values:
+        if value is not None:
+            return value
+    return None
+
 def _get_voltage_gen2(shelly_ip: str, timeout=2, auth: Optional[tuple]=None):
     url = f"http://{shelly_ip}/rpc/Switch.GetStatus?id=0"
     r = requests.get(url, timeout=timeout, auth=auth)
     d = r.json()
-    return d.get("voltage"), d.get("apower") or d.get("power"), d.get("current")
+    return (
+        d.get("voltage"),
+        _first_not_none(d.get("apower"), d.get("power")),
+        d.get("current"),
+    )
 
 def _get_voltage_gen1(shelly_ip: str, timeout=2, auth: Optional[tuple]=None):
     url = f"http://{shelly_ip}/status"
@@ -95,11 +106,11 @@ def _get_voltage_gen1(shelly_ip: str, timeout=2, auth: Optional[tuple]=None):
     if meters and isinstance(meters, list):
         m0 = meters[0]
         v = m0.get("voltage")
-        p = m0.get("power") or m0.get("apower")
+        p = _first_not_none(m0.get("power"), m0.get("apower"))
         a = m0.get("current")
-    v = v or data.get("voltage")
-    p = p or data.get("power")
-    a = a or data.get("current")
+    v = _first_not_none(v, data.get("voltage"))
+    p = _first_not_none(p, data.get("power"))
+    a = _first_not_none(a, data.get("current"))
     return v, p, a
 
 #logger for a single device

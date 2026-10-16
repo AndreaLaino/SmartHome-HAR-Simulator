@@ -175,27 +175,16 @@ def read_coordinates_from_file(file_path):
 
 def draw_points(coordinates, canvas):
     for point in coordinates:
-        name, x, y = point.name, point.x, point.y
+        x, y = point.x, point.y
         canvas_x, canvas_y = to_canvas(canvas, x, y)
         radius = to_canvas_length(canvas, 5)
-        marker_id = canvas.create_oval(
+        canvas.create_oval(
             canvas_x - radius,
             canvas_y - radius,
             canvas_x + radius,
             canvas_y + radius,
             fill="blue",
             tags='point',
-        )
-        create_map_label(
-            canvas,
-            x,
-            y,
-            text=name,
-            fill="#506080",
-            tags=('point',),
-            kind="point",
-            font=("Helvetica", 8),
-            hover_target=marker_id,
         )
 
 read_walls_coordinates: list[Wall] = []

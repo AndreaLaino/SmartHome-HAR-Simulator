@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import os, csv, shutil, json, glob
+import os, csv, shutil, json, glob, io
 from tkinter import messagebox
 from app.io.safe_dialog import ask_open_file, ask_open_files, ask_save_file, ask_directory
 import tkinter as tk
@@ -106,7 +106,7 @@ def merge_smartmeter_files(logs_dir: str = "logs") -> bool:
             writer = None
             total_rows = 0
 
-            for i, filepath in enumerate(input_files):
+            for filepath in input_files:
                 logger.info("Processing: %s", os.path.basename(filepath))
 
                 with open(filepath, 'r', encoding='utf-8') as infile:
@@ -119,8 +119,9 @@ def merge_smartmeter_files(logs_dir: str = "logs") -> bool:
                         logger.warning("File %s is empty", filepath)
                         continue
 
-                    # Write header only on first file
-                    if i == 0:
+                    # Initialize from the first non-empty file. Earlier files
+                    # may legitimately be empty.
+                    if writer is None:
                         writer = csv.writer(outfile, quoting=csv.QUOTE_NONE, escapechar='\\')
                         writer.writerow(header)
 
@@ -211,19 +212,41 @@ def _save_records_to_csv(records: list, filepath: str, data_type: str, device_na
 
     # If appending, load existing data into dict (keyed by timestamp for dedup)
     existing_data = {}
+    output_header = None
     if append_mode and file_exists:
         try:
             with open(filepath, 'r', encoding='utf-8') as f:
                 reader = csv.reader(f)
-                next(reader, None)  # Skip header
+                output_header = next(reader, None)
                 for row in reader:
                     if row and row[0] and row[0].strip():  # Validate non-empty timestamp
                         existing_data[row[0]] = row
         except Exception as e:
             logger.warning("Failed to read existing file for dedup: %s", e)
 
-    # Collect new records into dict (keyed by timestamp)
+    # Preserve CSV downloads as rows instead of discarding their ``raw_csv``
+    # payload. This also supports PIR/Switch/Weight CSVs whose schemas should
+    # remain unchanged.
     new_data = {}
+    for record in records:
+        raw_csv = record.get('raw_csv') if isinstance(record, dict) else None
+        if raw_csv is None:
+            continue
+        reader = csv.reader(io.StringIO(str(raw_csv), newline=''))
+        raw_header = next(reader, None)
+        if raw_header:
+            if output_header is None:
+                output_header = raw_header
+            elif raw_header != output_header:
+                logger.warning(
+                    "CSV header differs while importing %s; preserving rows under the first header",
+                    filepath,
+                )
+        for row in reader:
+            if row and row[0] and row[0].strip():
+                new_data[row[0].strip()] = row
+
+    # Collect normalized JSON records into the same timestamp-keyed store.
     if data_type == "smartmeter":
         for r in records:
             if 'raw_csv' in r:
@@ -253,18 +276,20 @@ def _save_records_to_csv(records: list, filepath: str, data_type: str, device_na
                     r.get('humidity', '')
                 ]
 
+    if output_header is None:
+        if data_type == "smartmeter":
+            output_header = ['timestamp_iso', 'device', 'device_id', 'ip', 'power_W', 'voltage_V', 'current_A']
+        elif data_type == "dht":
+            output_header = ['timestamp_iso', 'label', 'gpio', 'temp_C', 'hum_%']
+
     # Merge: existing_data + new_data (new data overwrites duplicates)
     merged_data = {**existing_data, **new_data}
 
     # Write merged data
     with open(filepath, 'w', newline='', encoding='utf-8') as f:
-        writer = csv.writer(f, quoting=csv.QUOTE_NONE, escapechar='\\')
-
-        # Write header
-        if data_type == "smartmeter":
-            writer.writerow(['timestamp_iso', 'device', 'device_id', 'ip', 'power_W', 'voltage_V', 'current_A'])
-        elif data_type == "dht":
-            writer.writerow(['timestamp_iso', 'label', 'gpio', 'temp_C', 'hum_%'])
+        writer = csv.writer(f)
+        if output_header:
+            writer.writerow(output_header)
 
         # Write all merged rows (sorted by timestamp)
         for ts in sorted(merged_data.keys()):
@@ -331,7 +356,7 @@ def load_scenario_from_path(ctx: AppContext, canvas, filename: str) -> bool:
     return True
 
 
-def _write_scenario(ctx: AppContext, filename: str) -> None:
+def _write_scenario(ctx: AppContext, filename: str) -> bool:
     """Write the current scenario to the given file."""
     if not ask_confirmation(
         ctx,
@@ -339,7 +364,7 @@ def _write_scenario(ctx: AppContext, filename: str) -> None:
         "Save",
         f"Do you want to save to:\n{filename}?",
     ):
-        return
+        return False
 
     with open(filename, "w", newline='') as csvfile:
         csvwriter = csv.writer(csvfile, delimiter=',', quotechar='"', quoting=csv.QUOTE_MINIMAL)
@@ -424,6 +449,7 @@ def _write_scenario(ctx: AppContext, filename: str) -> None:
 
     logger.info("Scenario saved successfully to %s.", filename)
     messagebox.showinfo("Saved", f"Scenario saved successfully to:\n{filename}")
+    return True
 
 
 def _clear_scenario(ctx: AppContext, canvas) -> None:
@@ -1064,8 +1090,8 @@ def save_scenario_as(ctx: AppContext) -> None:
     if not filename:
         return
 
-    ctx.current_file = filename
-    _write_scenario(ctx, filename)
+    if _write_scenario(ctx, filename):
+        ctx.current_file = filename
 
 
 def save_scenario(ctx: AppContext) -> None:
