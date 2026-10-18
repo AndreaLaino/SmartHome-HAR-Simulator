@@ -48,9 +48,11 @@ def build_cycles_raw_data(
         input_path,
         sep="\t",
         usecols=["time", "value"],
-        parse_dates=["time"],
     )
+    df["time"] = pd.to_datetime(df["time"], errors="coerce", format="mixed")
+    df["value"] = pd.to_numeric(df["value"], errors="coerce")
     df = df.dropna(subset=["time", "value"]).sort_values("time").reset_index(drop=True)
+    df = df[np.isfinite(df["value"])].reset_index(drop=True)
     if len(df) == 0:
         return []
 
@@ -67,7 +69,8 @@ def build_cycles_raw_data(
     if max_idle_gap_minutes is not None and float(max_idle_gap_minutes) > 0:
         max_idle_gap_seconds = float(max_idle_gap_minutes) * 60.0
 
-    def _close_cycle(start_idx_local: int, end_idx_local: int, tail_base_idx: int):
+    def _close_cycle(start_idx_local: int, end_idx_local: int, tail_base_idx: int,
+                     tail_limit_idx: int | None = None):
         nonlocal cycle_id
         if end_idx_local < start_idx_local:
             return
@@ -77,7 +80,13 @@ def build_cycles_raw_data(
         if duration_minutes_local < min_duration_minutes:
             return
 
-        tail_end_local = min(int(tail_base_idx) + tail_samples - 1, n - 1)
+        tail_end_local = max(end_idx_local, min(int(tail_base_idx) + tail_samples - 1, n - 1))
+        if tail_limit_idx is not None:
+            tail_end_local = min(tail_end_local, tail_limit_idx)
+        # A requested shutdown tail cannot include the next appliance cycle.
+        next_active = np.flatnonzero(above[end_idx_local + 1:tail_end_local + 1])
+        if next_active.size:
+            tail_end_local = end_idx_local + int(next_active[0])
         cycle_data_local = [
             {"time": pd.Timestamp(times[j]), "value": float(values[j])}
             for j in range(start_idx_local, tail_end_local + 1)
@@ -106,7 +115,7 @@ def build_cycles_raw_data(
             gap_seconds = (pd.Timestamp(times[i]) - pd.Timestamp(times[i - 1])).total_seconds()
             if gap_seconds >= max_idle_gap_seconds:
                 # Long gap with no valid readings: force cycle boundary.
-                _close_cycle(start_idx, last_above_idx, i - 1)
+                _close_cycle(start_idx, last_above_idx, i - 1, tail_limit_idx=i - 1)
                 in_cycle = False
                 start_idx = -1
                 last_above_idx = -1
@@ -146,9 +155,10 @@ def build_cycles_raw_data(
 def extract_cycle_df(cycle: dict[str, Any]) -> pd.DataFrame:
     df = pd.DataFrame(cycle["data"]).copy()
     df = df.dropna(subset=["time", "value"]).copy()
-    df["time"] = pd.to_datetime(df["time"])
+    df["time"] = pd.to_datetime(df["time"], errors="coerce", format="mixed")
     df["value"] = pd.to_numeric(df["value"], errors="coerce")
-    df = df.dropna(subset=["value"]).sort_values("time").reset_index(drop=True)
+    df = df.dropna(subset=["time", "value"]).sort_values("time").reset_index(drop=True)
+    df = df[np.isfinite(df["value"])].reset_index(drop=True)
     return df
 
 
@@ -256,10 +266,23 @@ def _compute_k_scores(
 
     for k in k_range:
         lbl = fcluster(Z, t=k, criterion="maxclust") - 1
+        if not 2 <= np.unique(lbl).size < n_cycles:
+            continue
         labels_by_k[k] = lbl
         sil_scores.append(float(silhouette_score(D_hybrid, lbl, metric="precomputed")))
         db_scores.append(float(davies_bouldin_score(global_scaled, lbl)))
         ch_scores.append(float(calinski_harabasz_score(global_scaled, lbl)))
+
+    k_range = list(labels_by_k)
+    if not k_range:
+        # Identical cycles can produce one maxclust group for every candidate.
+        # Metrics are undefined, but a user-requested exact partition is valid.
+        fallback_k = max(2, min(int(k_cfg["search_max"]), n_cycles - 1))
+        scores_df = pd.DataFrame(columns=["k", "silhouette", "davies_bouldin", "calinski_harabasz"])
+        picks = {name: fallback_k for name in (
+            "k_accel", "k_sil", "k_db", "k_ch", "k_human", "k_vote"
+        )}
+        return scores_df, picks
 
     k_sil = k_range[int(np.argmax(sil_scores))]
     k_db = k_range[int(np.argmin(db_scores))]
@@ -659,6 +682,8 @@ def run_cycle_pipeline(
         fout.write(f"Calinski-Harabasz   -> k = {picks['k_ch']}\n")
         fout.write(f"\nCluster suggerito (voto): {picks['k_vote']}\n")
         fout.write(f"Cluster human-friendly: {picks['k_human']}\n\n")
+        if scores_df.empty:
+            fout.write("No valid multi-cluster partition; cluster scores are unavailable.\n")
         fout.write(scores_df.to_string(index=False))
 
     if exact_k is not None:

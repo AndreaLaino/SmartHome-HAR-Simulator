@@ -11,7 +11,7 @@ HOUSES_DIR = BASE_DIR / "houses"
 SAVES_DIR = BASE_DIR / "saves"
 DEVICES_DIR = BASE_DIR / "devices"
 
-_session_lock = threading.Lock()
+_session_lock = threading.RLock()
 _current_session_dir: Path | None = None
 
 SESSION_SUBDIRS = {
@@ -90,8 +90,9 @@ def get_or_create_current_save_session(suffix: str = "") -> Path:
     with _session_lock:
         if _current_session_dir is not None and _current_session_dir.exists():
             return _current_session_dir
-
-    return create_new_save_session(suffix=suffix)
+        # Keep first creation atomic so concurrent sensor loggers all write
+        # into the same run. Creation also takes this reentrant lock.
+        return create_new_save_session(suffix=suffix)
 
 
 def get_current_save_session() -> Path | None:

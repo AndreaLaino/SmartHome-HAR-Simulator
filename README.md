@@ -101,12 +101,26 @@ grid can be hidden without disabling snapping (or shown while snapping is off).
 Run the automated test suite with:
 
 ```bash
+python -m pip install -e ".[test]"
 python -m unittest discover -s tests -v
 ```
 
-The tests cover scenario loading, activity recognition, geometry, Smart Meter
-profiles, cycle completion, appliance state transitions, and temperature
-replay and smoothing.
+The suite includes headless unit and integration tests for scenario round trips,
+timer and simulation lifecycle, activity recognition, geometry and editing,
+temperature replay, appliance consumption and prediction, Smart Meter profiles,
+hardware adapters, cloud imports, interaction logging, and replay/export flows.
+Fixtures use temporary files and mocked external services; no AWS credentials,
+physical sensors, local `sensor_map.json`, or private datasets are needed.
+
+Run the suite with branch coverage:
+
+```bash
+python -m coverage run -m unittest discover -s tests -v
+python -m coverage report
+```
+
+See [TESTING.md](TESTING.md) for focused runs, real Tk smoke tests, coverage
+reports, and the automated Windows/Linux CI checks.
 
 Python syntax can be checked with:
 

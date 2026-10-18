@@ -435,9 +435,17 @@ class TemperatureGraphTests(unittest.TestCase):
     def test_sensor_map_is_resolved_from_project_directory(self):
         previous_cwd = Path.cwd()
         with tempfile.TemporaryDirectory() as tmpdir:
+            project_dir = Path(tmpdir) / "project"
+            project_dir.mkdir()
+            (project_dir / "sensor_map.json").write_text(
+                '{"t1": {"by": "dht", "gpio": 4}}', encoding="utf-8"
+            )
             try:
                 os.chdir(tmpdir)
-                self.assertEqual(graph._get_binding_dht_gpio("t1"), 4)
+                with patch.object(graph, "_PROJECT_DIR", project_dir), patch.object(
+                    graph, "_SENSOR_MAP_PATH", Path("sensor_map.json")
+                ):
+                    self.assertEqual(graph._get_binding_dht_gpio("t1"), 4)
             finally:
                 os.chdir(previous_cwd)
 

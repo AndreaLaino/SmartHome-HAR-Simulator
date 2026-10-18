@@ -2,7 +2,7 @@ from __future__ import annotations
 import tkinter as tk
 
 from timer import TimerApp
-from sim import start_simulation, interaction, update_sensors
+from sim import start_simulation, interaction, update_sensors, render_simulation_state
 from activity import monitor_activities, process_activities, close_current_activity
 from log import start_interaction_log_session, stop_interaction_log_session
 from app.context import AppContext
@@ -228,6 +228,7 @@ def start_sim(ctx: AppContext):
         )
 
     timer_app_instance.on_advance_step = _on_advance_step
+    timer_app_instance.on_advance_complete = lambda: render_simulation_state(ctx.canvas, runtime_sources)
 
     # Scenario editing remains available in Manual mode. Placement commands
     # temporarily replace the simulation click binding and restore it when done.

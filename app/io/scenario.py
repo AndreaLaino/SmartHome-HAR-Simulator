@@ -180,6 +180,9 @@ def _parse_json_to_records(content: str, data_type: str) -> list:
             continue
         try:
             data = json.loads(line)
+            if not isinstance(data, dict):
+                logger.warning("Ignoring JSON line that is not an object")
+                continue
             if data_type == "smartmeter":
                 # SmartMeter format: {"ts":1765405428639,"apower":37.5,"voltage":229.7,"current":0.291,"energy_total":134.083}
                 records.append({
@@ -366,7 +369,7 @@ def _write_scenario(ctx: AppContext, filename: str) -> bool:
     ):
         return False
 
-    with open(filename, "w", newline='') as csvfile:
+    with open(filename, "w", newline='', encoding="utf-8") as csvfile:
         csvwriter = csv.writer(csvfile, delimiter=',', quotechar='"', quoting=csv.QUOTE_MINIMAL)
 
         # Points
@@ -470,7 +473,10 @@ def _clear_scenario(ctx: AppContext, canvas) -> None:
     ctx._map_drag_state = None
     ctx._movement_undo_stack = []
 
-    for lst in [points, walls, sensors, devices, doors,
+    from wall import walls_coordinates
+    from read import read_walls_coordinates
+
+    for lst in [points, walls, walls_coordinates, read_walls_coordinates, sensors, devices, doors,
                 ctx.r_points, ctx.read_walls, ctx.read_sensors, ctx.read_devices, ctx.read_doors]:
         lst.clear()
 

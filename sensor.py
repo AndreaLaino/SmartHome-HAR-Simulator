@@ -149,14 +149,16 @@ class TemperatureSensorAdapter:
         active_devices=None,
         render: bool = True,
     ):
-        runtime = state.runtime_view(
+        overrides = dict(
             heating_factor=heating_factor,
             delta_seconds=delta_seconds,
             current_datetime=current_datetime,
             devices=active_devices,
         )
+        runtime = state.runtime_view(**{key: value for key, value in overrides.items() if value is not None})
         heating_factor = float(runtime.get("heating_factor", 0.0) or 0.0)
-        delta_seconds = float(runtime.get("delta_seconds", 1.0) or 1.0)
+        runtime_delta = runtime.get("delta_seconds")
+        delta_seconds = float(1.0 if runtime_delta is None else runtime_delta)
         current_datetime = runtime.get("current_datetime")
         active_devices = runtime.get("devices")
 
@@ -194,15 +196,17 @@ class SmartMeterSensorAdapter:
         current_datetime=None,
         render: bool = True,
     ):
-        runtime = state.runtime_view(
+        overrides = dict(
             devices=devices_list,
             delta_seconds=delta_seconds,
             current_datetime=current_datetime,
         )
+        runtime = state.runtime_view(**{key: value for key, value in overrides.items() if value is not None})
         devices_list = runtime.get("devices")
         if devices_list is None:
             raise RuntimeError("SmartMeterSensorAdapter requires runtime['devices'] or an explicit devices_list")
-        delta_seconds = float(runtime.get("delta_seconds", 1.0) or 1.0)
+        runtime_delta = runtime.get("delta_seconds")
+        delta_seconds = float(1.0 if runtime_delta is None else runtime_delta)
         current_datetime = runtime.get("current_datetime")
         cycles_store = state.active_cycles()
 
@@ -1099,6 +1103,7 @@ def _load_llm_cycle_curve_for_cycle_id(
     df["time"] = pd.to_datetime(df["time"], errors="coerce")
     df["value"] = pd.to_numeric(df["value"], errors="coerce")
     df = df.dropna(subset=["time", "value"]).sort_values("time").reset_index(drop=True)
+    df = df[df["value"].map(math.isfinite)].reset_index(drop=True)
     if len(df) < 2:
         LLM_CYCLE_CURVE_CACHE[cache_key] = None
         return None
@@ -1205,6 +1210,7 @@ def _load_llm_completion_curve(profile: dict) -> Optional[tuple[list[float], lis
     completed["time"] = pd.to_datetime(completed["time"], errors="coerce")
     completed["value"] = pd.to_numeric(completed["value"], errors="coerce")
     completed = completed.dropna(subset=["time", "value"]).sort_values("time").reset_index(drop=True)
+    completed = completed[completed["value"].map(math.isfinite)].reset_index(drop=True)
     if len(completed) < 2:
         return None
 
@@ -1309,6 +1315,7 @@ def _standardize_realtime_power_df(raw: pd.DataFrame) -> Optional[pd.DataFrame]:
         "value": pd.to_numeric(raw[value_col], errors="coerce"),
     })
     df = df.dropna(subset=["time", "value"]).sort_values("time").reset_index(drop=True)
+    df = df[df["value"].map(math.isfinite)].reset_index(drop=True)
     return df if len(df) >= 2 else None
 
 

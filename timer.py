@@ -21,6 +21,11 @@ class TimerApp:
         )
 
         self.on_advance_step = None
+        self.on_advance_complete = None
+        self._advance_reset_job = None
+        self._advance_reset_token = None
+        self._advance_batch_job = None
+        self._advance_batch_token = None
 
         self.timer_frame = tk.Frame(parent, width=400, height=500, bg="lightgrey", bd=2, relief="sunken")
         self.timer_frame.pack(side="right", fill="both", padx=15, pady=15, expand=True)
@@ -156,43 +161,60 @@ class TimerApp:
 
     def _do_advance_batch(self):
         """Process advance steps with short yields to keep UI responsive."""
+        self._cancel_advance_batch()
+        self._cancel_advance_reset()
         if not self.is_running or self.simulated_start_time is None:
             self.advance_remaining = 0
             return
 
         if self.advance_remaining <= 0:
             self.advanced = True
-            self.timer_frame.after(200, self.reset_flag)
+            self._complete_advance()
             return
 
         step = min(self.advance_speed, self.advance_remaining)
         self.elapsed_time += timedelta(seconds=step)
+        self.advance_remaining -= step
         if self.is_running:
             self.last_update = datetime.now()
 
         if callable(self.on_advance_step):
             self.on_advance_step(step)
 
-        self.advance_remaining -= step
+        if not self.is_running or self.simulated_start_time is None:
+            self.advance_remaining = 0
+            return
         
         # Update display
         simulated_time = self.get_simulated_time()
         self.label.config(text=f"Time: {simulated_time} \n Date: {self.current_date}")
         
         # Schedule next step with a short delay to keep UI responsive
-        self.timer_frame.after(10, self._do_advance_batch)
+        token = object()
+        self._advance_batch_token = token
+
+        def next_batch():
+            if self._advance_batch_token is not token:
+                return
+            self._advance_batch_job = None
+            self._advance_batch_token = None
+            self._do_advance_batch()
+
+        self._advance_batch_job = self.timer_frame.after(10, next_batch)
 
     def _do_advance_instant(self, jump_seconds):
         """Advance in a single step (skip) to avoid UI lag."""
         if jump_seconds <= 0 or not self.is_running or self.simulated_start_time is None:
             return
 
+        self._cancel_advance_batch()
+        self._cancel_advance_reset()
         self.advanced = True
         self.advance_remaining = 0
 
         remaining = int(jump_seconds)
         step_size = 1
-        while remaining > 0:
+        while remaining > 0 and self.is_running and self.simulated_start_time is not None:
             step = step_size if remaining >= step_size else remaining
             self.elapsed_time += timedelta(seconds=step)
             if self.is_running:
@@ -203,11 +225,47 @@ class TimerApp:
 
             remaining -= step
 
+        if self.simulated_start_time is None:
+            return
+
         simulated_time = self.get_simulated_time()
         self.label.config(text=f"Time: {simulated_time} \n Date: {self.current_date}")
-        self.timer_frame.after(200, self.reset_flag)
+        self._complete_advance()
+
+    def _cancel_advance_batch(self):
+        job = getattr(self, "_advance_batch_job", None)
+        self._advance_batch_job = None
+        self._advance_batch_token = None
+        if job is not None:
+            self.timer_frame.after_cancel(job)
+
+    def _cancel_advance_reset(self):
+        job = getattr(self, "_advance_reset_job", None)
+        self._advance_reset_job = None
+        self._advance_reset_token = None
+        if job is not None:
+            self.timer_frame.after_cancel(job)
+
+    def _complete_advance(self):
+        callback = getattr(self, "on_advance_complete", None)
+        if callable(callback):
+            callback()
+        self._cancel_advance_reset()
+        token = object()
+        self._advance_reset_token = token
+
+        def clear_advance_flag():
+            if self._advance_reset_token is not token:
+                return
+            self._advance_reset_job = None
+            self._advance_reset_token = None
+            self.reset_flag()
+
+        self._advance_reset_job = self.timer_frame.after(200, clear_advance_flag)
 
     def reset_flag(self):
+        self._cancel_advance_batch()
+        self._cancel_advance_reset()
         self.advanced = False
         self.advance_remaining = 0
 
@@ -237,6 +295,7 @@ class TimerApp:
         self.start_time = None
         self.elapsed_time = timedelta()
         self.simulated_start_time = None
+        self.reset_flag()
         self.current_date = datetime.today().strftime("%Y-%m-%d")
         self.last_update = None
 

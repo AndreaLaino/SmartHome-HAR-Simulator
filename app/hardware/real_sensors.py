@@ -106,11 +106,21 @@ def dht_csv_path_for_label(label: str) -> str:
     return os.path.join(DEVICES_DIR, f"dht_{safe}.csv")
 
 
-def dht_csv_ensure_header(path: str) -> None:
+def _csv_ensure_header(path: str, fields: list[str]) -> None:
+    """Initialize empty logs and keep resumed appends on a separate CSV row."""
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-    if not os.path.isfile(path):
+    if not os.path.isfile(path) or os.path.getsize(path) == 0:
         with open(path, "w", newline="", encoding="utf-8") as f:
-            csv.writer(f).writerow(["timestamp_iso", "label", "gpio", "temp_C", "hum_%"])
+            csv.writer(f).writerow(fields)
+    else:
+        with open(path, "rb+") as f:
+            f.seek(-1, os.SEEK_END)
+            if f.read(1) not in (b"\n", b"\r"):
+                f.write(b"\n")
+
+
+def dht_csv_ensure_header(path: str) -> None:
+    _csv_ensure_header(path, ["timestamp_iso", "label", "gpio", "temp_C", "hum_%"])
 
 
 class DHTLogger:
@@ -278,10 +288,7 @@ def gpio_csv_path_for_sensor(sensor_label: str, kind: str) -> str:
 
 
 def gpio_csv_ensure_header(path: str) -> None:
-    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-    if not os.path.isfile(path):
-        with open(path, "w", newline="", encoding="utf-8") as f:
-            csv.writer(f).writerow(["timestamp_iso", "label", "kind", "gpio", "value"])
+    _csv_ensure_header(path, ["timestamp_iso", "label", "kind", "gpio", "value"])
 
 
 class GPIOValueLogger:

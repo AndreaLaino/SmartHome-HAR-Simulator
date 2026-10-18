@@ -525,7 +525,7 @@ def update_devices_consumption(canvas, devices, delta_seconds, timer_app_instanc
 
                 # At end of profile: for non-continuous devices, turn OFF and close cycle.
                 # Continuous: Refrigerator, Computer and Oven continue in duration module.
-                if elapsed_min > profile_duration:
+                if elapsed_min >= profile_duration:
                     if cycle_type not in ["Fridge", "Computer", "Oven"]:
                         # Turn off the device and close the cycle
                         device.state = 0

@@ -34,10 +34,13 @@ def predict_device_consumption(
         return []
 
     out: List[PredictedSample] = []
-    steps = max(1, int(horizon_seconds // step_seconds))
+    steps = int(horizon_seconds // step_seconds)
+    offsets = [i * step_seconds for i in range(steps + 1)]
+    if offsets[-1] < horizon_seconds:
+        offsets.append(horizon_seconds)
 
-    for i in range(steps + 1):
-        ts = current_datetime + timedelta(seconds=i * step_seconds)
+    for offset in offsets:
+        ts = current_datetime + timedelta(seconds=offset)
         w = get_device_consumption(
             device_name,
             device_type,

@@ -41,6 +41,9 @@ def _activity_state(house_state: HouseState) -> dict:
     state.setdefault("returning_last_edge_idx", -1)
     state.setdefault("last_pir_motion_time", None)
     state.setdefault("pir_event_positions", {})
+    state.setdefault("monitor_job", None)
+    state.setdefault("monitor_canvas", None)
+    state.setdefault("monitor_token", None)
     return state
 
 
@@ -160,7 +163,19 @@ def process_activities(
     update_activity_state(now, detected, activity_label, state, log_state)
 
 
+def _cancel_activity_monitor(state):
+    job = state.get("monitor_job")
+    canvas = state.get("monitor_canvas")
+    state["monitor_job"] = None
+    state["monitor_canvas"] = None
+    state["monitor_token"] = None
+    if job is not None and canvas is not None:
+        canvas.after_cancel(job)
+
+
 def monitor_activities(canvas, activity_label, timer_app_instance, sensor_states_store, house_state: HouseState, runtime_sources: dict):
+    state = _activity_state(house_state)
+    _cancel_activity_monitor(state)
     process_activities(
         activity_label,
         timer_app_instance,
@@ -168,8 +183,21 @@ def monitor_activities(canvas, activity_label, timer_app_instance, sensor_states
         house_state,
         runtime_sources,
     )
-    if timer_app_instance.is_running:
-        canvas.after(1000, monitor_activities, canvas, activity_label, timer_app_instance, sensor_states_store, house_state, runtime_sources)
+    if timer_app_instance.is_running and canvas is not None:
+        token = object()
+        state["monitor_token"] = token
+
+        def poll_activities():
+            if house_state.activity_state() is not state or state["monitor_token"] is not token:
+                return
+            state["monitor_job"] = None
+            state["monitor_canvas"] = None
+            state["monitor_token"] = None
+            monitor_activities(canvas, activity_label, timer_app_instance,
+                               sensor_states_store, house_state, runtime_sources)
+
+        state["monitor_canvas"] = canvas
+        state["monitor_job"] = canvas.after(1000, poll_activities)
 
 def update_activity_state(current_time, detected_activities, activity_label, state: dict, log_state: dict):
     current_activities = state["current_activities"]
@@ -203,6 +231,7 @@ def close_current_activity(timer_app_instance, activity_label=None, house_state:
         "activity_log": [],
         "active_activities": {},
     }
+    _cancel_activity_monitor(state)
     current_activities = state["current_activities"]
     activity_sessions = state["activity_sessions"]
 
