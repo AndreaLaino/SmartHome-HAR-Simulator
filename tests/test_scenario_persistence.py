@@ -205,7 +205,14 @@ class ScenarioFilesTests(unittest.TestCase):
         ):
             self.assertTrue(scenario.load_scenario_from_path(ctx, canvas, path))
         self.assertEqual(calls, ["clear", "load"])
-        load.assert_called_once_with(ctx, canvas, str(path.resolve()))
+        load.assert_called_once()
+        loaded_ctx, loaded_canvas, loaded_path = load.call_args.args
+        self.assertIs(loaded_ctx, ctx)
+        self.assertIs(loaded_canvas, canvas)
+        self.assertTrue(os.path.isabs(loaded_path))
+        # Windows runners may use an 8.3 alias (RUNNER~1) for their temp
+        # directory. Absolute paths need not use the spelling from resolve().
+        self.assertTrue(os.path.samefile(loaded_path, path))
 
     def test_cancelled_open_does_not_clear_current_home(self):
         with (

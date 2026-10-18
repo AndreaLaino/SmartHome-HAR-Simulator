@@ -157,7 +157,8 @@ class TkSmokeTests(unittest.TestCase):
         self.pump()
         self.assertEqual(len(self.ctx.canvas.find_withtag("wall")), 4)
         self.assertEqual(len(self.ctx.read_sensors), 1)
-        self.assertEqual(self.ctx.current_file, str(saved.resolve()))
+        self.assertTrue(os.path.isabs(self.ctx.current_file))
+        self.assertTrue(os.path.samefile(self.ctx.current_file, saved))
         self.assertTrue(path.exists())
 
     def test_manual_buttons_start_pause_skip_resume_and_reset_real_timer(self):
