@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import copy
 import math
+import sys
 import tkinter as tk
 from dataclasses import dataclass
 from tkinter import messagebox
 
 from app.confirmations import ask_confirmation
+from lighting import LIGHT_CONTROLS, LIGHT_TYPES, SMART_LIGHT, add_light_switch, ensure_light_switches, with_integrated_light_meters
 
 from canvas_zoom import (
     event_to_logical,
@@ -60,6 +62,14 @@ def current_sensors(ctx) -> list:
     return sensors
 
 
+def current_light_switches(ctx) -> list:
+    return [switch for light in current_devices(ctx) for switch in ensure_light_switches(light)]
+
+
+def switch_owner(ctx, switch):
+    return next((light for light in current_devices(ctx) if light.name == switch.associated_device), None)
+
+
 def current_walls(ctx) -> list:
     if ctx.load_active:
         return getattr(ctx, "read_walls", [])
@@ -82,7 +92,7 @@ def current_doors(ctx) -> list:
 def associated_sensor_names(ctx, device) -> list[str]:
     return [
         sensor.name
-        for sensor in current_sensors(ctx)
+        for sensor in with_integrated_light_meters(current_sensors(ctx), current_devices(ctx))
         if getattr(sensor, "associated_device", None) == device.name
     ]
 
@@ -168,6 +178,11 @@ def _selection_at_event(ctx, event):
 
     for item_id in reversed(item_ids):
         tags = set(canvas.gettags(item_id))
+        if "light_switch" in tags:
+            value = next((switch for switch in current_light_switches(ctx)
+                          if f"light_switch_id:{switch.name}" in tags
+                          and f"light_switch:{switch.associated_device}" in tags), None)
+            return MapSelection("light_switch", value) if value is not None else None
         if "device" in tags:
             value = _nearest_marker(current_devices(ctx), logical_x, logical_y)
             return MapSelection("device", value) if value is not None else None
@@ -201,6 +216,8 @@ def _selections_in_rectangle(ctx, x1: float, y1: float, x2: float, y2: float):
         ("point", current_points(ctx)),
         ("sensor", current_sensors(ctx)),
         ("device", current_devices(ctx)),
+        ("light_switch", [switch for switch in current_light_switches(ctx)
+                          if switch_owner(ctx, switch).light_control == "manual"]),
     ):
         selections.extend(
             MapSelection(kind, value)
@@ -280,7 +297,7 @@ def finish_marquee_selection(ctx, event):
 def _draw_selection_shape(ctx, selection: MapSelection) -> None:
     canvas = ctx.canvas
     value = selection.value
-    if selection.kind in {"point", "sensor", "device"}:
+    if selection.kind in {"point", "sensor", "device", "light_switch"}:
         x, y = to_canvas(canvas, value.x, value.y)
         radius = max(9, to_canvas_length(canvas, 10))
         canvas.create_oval(
@@ -368,6 +385,11 @@ def _show_csv(ctx, names, title="Sensor CSV/log") -> None:
 
 
 def show_device_details(ctx, device) -> None:
+    if device.type in LIGHT_TYPES:
+        from app.ui.light_details import open_light_details
+
+        open_light_details(ctx, device)
+        return
     sensor_names = associated_sensor_names(ctx, device)
     messagebox.showinfo(
         f"Device: {device.name}",
@@ -380,6 +402,8 @@ def show_device_details(ctx, device) -> None:
                 f"Power: {device.power} W",
                 f"Consumption range: {device.min_consumption} - {device.max_consumption} W",
                 f"Current consumption: {device.current_consumption} W",
+                *(["Smart Meter: integrated"] if device.type == SMART_LIGHT else []),
+                *([f"Light control: {device.light_control.title()}"] if device.type in LIGHT_TYPES else []),
                 f"Associated sensors: {', '.join(sensor_names) if sensor_names else 'None'}",
             ]
         ),
@@ -390,6 +414,40 @@ def show_device_graphs(ctx, device) -> None:
     _show_graphs(ctx, associated_sensor_names(ctx, device), "Device graphs")
 
 
+def set_light_control(ctx, device, control) -> None:
+    if device.type not in LIGHT_TYPES or control not in LIGHT_CONTROLS:
+        return
+    if device.light_control != control:
+        ctx._movement_redo_stack = []
+    device.light_control = control
+    if control == "manual" and not ensure_light_switches(device):
+        add_light_switch(device)
+        ctx._movement_redo_stack = []
+    _redraw_editable_objects(ctx)
+
+
+def add_switch_to_light(ctx, light):
+    switch = add_light_switch(light)
+    switch.x, switch.y = snap_logical_position(ctx.canvas, switch.x, switch.y)
+    _push_undo_action(ctx, {"kind": "switch_added", "switch": switch})
+    _set_selected_objects(ctx, [MapSelection("light_switch", switch)])
+    _redraw_editable_objects(ctx)
+    _draw_selections(ctx, selected_objects(ctx))
+    return switch
+
+
+def inspect_light_at_event(ctx, event):
+    if getattr(ctx, "_canvas_mode", "select") == "placement":
+        return None
+    selection = _selection_at_event(ctx, event)
+    if selection is None or selection.kind != "device" or selection.value.type not in LIGHT_TYPES:
+        return None
+    ctx._map_drag_state = None
+    _set_selected_objects(ctx, [selection])
+    show_device_details(ctx, selection.value)
+    return "break"
+
+
 def show_device_csv(ctx, device) -> None:
     _show_csv(ctx, associated_sensor_names(ctx, device), "Device CSV/log")
 
@@ -398,6 +456,10 @@ def _show_details(ctx, selection: MapSelection) -> None:
     value = selection.value
     if selection.kind == "device":
         show_device_details(ctx, value)
+    elif selection.kind == "light_switch":
+        owner = switch_owner(ctx, value)
+        messagebox.showinfo("Light switch", f"Name: {value.name}\nLight: {value.associated_device}\n"
+                            f"Position: ({value.x}, {value.y})\nState: {'ON' if owner and owner.state else 'OFF'}")
     elif selection.kind == "sensor":
         messagebox.showinfo(
             f"Sensor: {value.name}",
@@ -556,6 +618,8 @@ def copy_selected_object(ctx, _event=None):
     selection = getattr(ctx, "_selected_object", None)
     if selection is None or selection.value is None:
         return None
+    if selection.kind == "device":
+        ensure_light_switches(selection.value)
     ctx._map_clipboard = MapSelection(
         selection.kind,
         copy.deepcopy(selection.value),
@@ -592,7 +656,16 @@ def _append_pasted_object(
     elif selection.kind == "device":
         source = current_devices(ctx)
         value.name = _clipboard_name(source, value.name, preserve_name)
+        for index, switch in enumerate(ensure_light_switches(value), start=1):
+            switch.associated_device = value.name
+            switch.name = f"switch_{value.name}" + (f"_{index}" if index > 1 else "")
         source.append(value)
+    elif selection.kind == "light_switch":
+        owner = switch_owner(ctx, value)
+        if owner is None:
+            return
+        value.name = _clipboard_name(current_light_switches(ctx), value.name, preserve_name)
+        ensure_light_switches(owner).append(value)
     elif selection.kind == "door":
         current_doors(ctx).append(value)
     elif selection.kind == "wall":
@@ -620,10 +693,15 @@ def paste_map_object(ctx, _event=None):
     ctx._map_clipboard_paste_count = count
     offset = 0 if is_cut else 20 * count
     value = copy.deepcopy(clipboard.value)
-    if clipboard.kind in {"point", "sensor", "device"}:
+    if clipboard.kind in {"point", "sensor", "device", "light_switch"}:
+        original_x, original_y = value.x, value.y
         value.x = int(round(value.x + offset))
         value.y = int(round(value.y + offset))
         value.x, value.y = snap_logical_position(ctx.canvas, value.x, value.y)
+        if clipboard.kind == "device":
+            for switch in ensure_light_switches(value):
+                switch.x, switch.y = snap_logical_position(ctx.canvas, switch.x + value.x - original_x,
+                                                         switch.y + value.y - original_y)
     else:
         value.x1 = int(round(value.x1 + offset))
         value.y1 = int(round(value.y1 + offset))
@@ -642,6 +720,7 @@ def paste_map_object(ctx, _event=None):
 
     selection = MapSelection(clipboard.kind, value)
     _append_pasted_object(ctx, selection, preserve_name=is_cut)
+    _push_undo_action(ctx, {"kind": "objects_added", "objects": [selection]})
     if is_cut:
         ctx._map_clipboard_is_cut = False
         ctx._map_clipboard_paste_count = 0
@@ -679,6 +758,7 @@ def cut_selected_object(ctx, _event=None):
         confirm=False,
         preserve_runtime=True,
     )
+    ctx._movement_redo_stack = []
     return "break"
 
 
@@ -690,7 +770,7 @@ def duplicate_selected_object(ctx, _event=None):
 
 def _capture_geometry(ctx) -> list[tuple[object, tuple]]:
     snapshot = []
-    for value in [*current_points(ctx), *current_sensors(ctx), *current_devices(ctx)]:
+    for value in [*current_points(ctx), *current_sensors(ctx), *current_devices(ctx), *current_light_switches(ctx)]:
         snapshot.append((value, (value.x, value.y)))
     for value in [*current_walls(ctx), *current_doors(ctx)]:
         snapshot.append((value, (value.x1, value.y1, value.x2, value.y2)))
@@ -705,14 +785,19 @@ def _restore_geometry(snapshot) -> None:
             value.x1, value.y1, value.x2, value.y2 = coordinates
 
 
-def _push_undo_action(ctx, action) -> None:
-    history = getattr(ctx, "_movement_undo_stack", None)
+def _append_history(ctx, stack_name, action) -> None:
+    history = getattr(ctx, stack_name, None)
     if history is None:
         history = []
-        ctx._movement_undo_stack = history
+        setattr(ctx, stack_name, history)
     history.append(action)
     if len(history) > 100:
         del history[:-100]
+
+
+def _push_undo_action(ctx, action) -> None:
+    _append_history(ctx, "_movement_undo_stack", action)
+    ctx._movement_redo_stack = []
 
 
 def record_wall_addition(ctx, wall) -> None:
@@ -720,37 +805,146 @@ def record_wall_addition(ctx, wall) -> None:
     _push_undo_action(ctx, {"kind": "wall_added", "wall": wall})
 
 
-def undo_last_movement(ctx, _event=None):
-    """Undo the most recent movement, wall creation, or wall deletion."""
-    history = getattr(ctx, "_movement_undo_stack", None)
+def _object_source(ctx, kind, value=None):
+    if kind == "light_switch":
+        owner = switch_owner(ctx, value) if value is not None else None
+        return ensure_light_switches(owner) if owner is not None else []
+    return {"point": current_points, "sensor": current_sensors, "device": current_devices,
+            "wall": current_walls, "door": current_doors}[kind](ctx)
+
+
+def _deletion_undo_action(ctx, selections):
+    removed_devices = {selection.value.name for selection in selections if selection.kind == "device"}
+    links = [(sensor, sensor.associated_device) for sensor in current_sensors(ctx)
+             if sensor.associated_device in removed_devices]
+    sensor_names = {selection.value.name for selection in selections if selection.kind == "sensor"}
+    for selection in selections:
+        meter = getattr(selection.value, "_integrated_smartmeter", None)
+        if meter is not None:
+            sensor_names.add(meter.name)
+    house = getattr(ctx, "house_state", None)
+    return {
+        "kind": "objects_removed",
+        "objects": [(selection, _object_source(ctx, selection.kind, selection.value).index(selection.value)) for selection in selections],
+        "links": links,
+        "sensor_states": {name: copy.deepcopy(house.sensor_states()[name]) for name in sensor_names
+                          if house is not None and name in house.sensor_states()},
+        "cycles": {name: copy.deepcopy(house.active_cycles()[name]) for name in removed_devices
+                   if house is not None and name in house.active_cycles()},
+        "room_overrides": dict(getattr(ctx, "room_overrides", {})),
+    }
+
+
+def _restore_deleted_objects(ctx, action):
+    restored = []
+    for selection, index in action["objects"]:
+        source = _object_source(ctx, selection.kind, selection.value)
+        if any(value is selection.value for value in source):
+            continue
+        if selection.kind == "wall":
+            _append_pasted_object(ctx, selection, preserve_name=True)
+            source.remove(selection.value)
+        source.insert(index, selection.value)
+        restored.append(selection)
+    for sensor, device_name in action["links"]:
+        sensor.associated_device = device_name
+    house = getattr(ctx, "house_state", None)
+    if house is not None:
+        house.sensor_states().update(action["sensor_states"])
+        house.active_cycles().update(action["cycles"])
+    if hasattr(ctx, "room_overrides"):
+        ctx.room_overrides.update(action["room_overrides"])
+    _set_selected_objects(ctx, restored)
+
+
+def _remove_objects(ctx, selections, *, preserve_runtime=False) -> None:
+    # Remove segments before their reference points, including legacy walls
+    # represented by point names. Devices own their switches implicitly.
+    ordered = sorted(selections, key=lambda selection: selection.kind == "point")
+    house = getattr(ctx, "house_state", None)
+    for selection in ordered:
+        value = selection.value
+        source = _object_source(ctx, selection.kind, value)
+        if not any(item is value for item in source):
+            continue
+        if selection.kind == "wall":
+            _remove_wall_model(ctx, value)
+        elif selection.kind == "door":
+            _remove_door_model(ctx, value)
+        else:
+            source.remove(value)
+        if preserve_runtime:
+            continue
+        if selection.kind == "device":
+            meter = getattr(value, "_integrated_smartmeter", None)
+            if house is not None:
+                if meter is not None:
+                    house.sensor_states().pop(meter.name, None)
+                house.active_cycles().pop(value.name, None)
+            for sensor in current_sensors(ctx):
+                if sensor.associated_device == value.name:
+                    sensor.associated_device = None
+        elif selection.kind == "sensor" and house is not None:
+            house.sensor_states().pop(value.name, None)
+
+
+def _apply_history_action(ctx, action):
+    """Apply one history record and capture its inverse for the other stack."""
+    if not isinstance(action, dict):
+        # Backward-compatible geometry snapshots created before action records.
+        action = {"kind": "geometry", "snapshot": action}
+    kind = action.get("kind")
+    if kind == "geometry":
+        snapshot = [(value, (value.x, value.y) if len(coordinates) == 2
+                     else (value.x1, value.y1, value.x2, value.y2))
+                    for value, coordinates in action["snapshot"]]
+        _restore_geometry(action["snapshot"])
+        return {"kind": "geometry", "snapshot": snapshot}
+    if kind == "wall_added":
+        action = {"kind": "objects_added", "objects": [MapSelection("wall", action["wall"])]}
+    elif kind == "switch_added":
+        action = {"kind": "objects_added", "objects": [MapSelection("light_switch", action["switch"])]}
+    elif kind == "wall_removed":
+        selection = MapSelection("wall", action["wall"])
+        _append_pasted_object(ctx, selection, preserve_name=True)
+        _set_selected_objects(ctx, [selection])
+        return {"kind": "objects_added", "objects": [selection]}
+    if action.get("kind") == "objects_added":
+        selections = action["objects"]
+        inverse = _deletion_undo_action(ctx, selections)
+        _remove_objects(ctx, selections)
+        clear_selection(ctx)
+        return inverse
+    if kind == "objects_removed":
+        _restore_deleted_objects(ctx, action)
+        return {"kind": "objects_added", "objects": [selection for selection, _index in action["objects"]]}
+    return None
+
+
+def _replay_history(ctx, source_name, destination_name):
+    history = getattr(ctx, source_name, None)
     if not history:
         return None
-    action = history.pop()
-    if isinstance(action, dict):
-        kind = action.get("kind")
-        if kind == "geometry":
-            _restore_geometry(action["snapshot"])
-        elif kind == "wall_added":
-            _remove_wall_model(ctx, action["wall"])
-            clear_selection(ctx)
-        elif kind == "wall_removed":
-            wall = action["wall"]
-            _append_pasted_object(
-                ctx,
-                MapSelection("wall", wall),
-                preserve_name=True,
-            )
-            _set_selected_objects(ctx, [MapSelection("wall", wall)])
-        else:
-            return None
-    else:
-        # Backward-compatible geometry snapshots created before action records.
-        _restore_geometry(action)
+    inverse = _apply_history_action(ctx, history[-1])
+    if inverse is None:
+        return None
+    history.pop()
+    _append_history(ctx, destination_name, inverse)
     _redraw_editable_objects(ctx)
     selections = selected_objects(ctx)
     if selections:
         _draw_selections(ctx, selections)
     return "break"
+
+
+def undo_last_movement(ctx, _event=None):
+    """Undo the most recent map edit, preserving it for Redo."""
+    return _replay_history(ctx, "_movement_undo_stack", "_movement_redo_stack")
+
+
+def redo_last_movement(ctx, _event=None):
+    """Reapply the most recently undone map edit."""
+    return _replay_history(ctx, "_movement_redo_stack", "_movement_undo_stack")
 
 
 def _translate_vertices(ctx, mapping: dict[tuple, tuple]) -> None:
@@ -834,7 +1028,7 @@ def _resolved_drag_delta(ctx, state, dx: int, dy: int) -> tuple[int, int]:
             for item, coordinates in state["snapshot"]
             if item is snap_selection.value
         )
-        if snap_selection.kind in {"point", "sensor", "device"}:
+        if snap_selection.kind in {"point", "sensor", "device", "light_switch"}:
             anchor_x, anchor_y = snap_original
         elif len(selections) == 1 and state["endpoint"] == 2:
             anchor_x, anchor_y = snap_original[2], snap_original[3]
@@ -856,7 +1050,7 @@ def _preview_coordinates(ctx, state, selection, dx: int, dy: int) -> tuple:
         for item, coordinates in state["snapshot"]
         if item is selection.value
     )
-    if selection.kind in {"point", "sensor", "device"}:
+    if selection.kind in {"point", "sensor", "device", "light_switch"}:
         return snap_logical_position(
             ctx.canvas,
             original[0] + dx,
@@ -938,7 +1132,7 @@ def _apply_drag_delta(ctx, state, dx: int, dy: int) -> None:
         for candidate in selections:
             value = candidate.value
             coordinates = originals[id(value)]
-            if candidate.kind in {"sensor", "device"}:
+            if candidate.kind in {"sensor", "device", "light_switch"}:
                 value.x, value.y = coordinates[0] + dx, coordinates[1] + dy
             elif candidate.kind == "door":
                 x1, y1, x2, y2 = coordinates
@@ -958,7 +1152,7 @@ def _apply_drag_delta(ctx, state, dx: int, dy: int) -> None:
         for item, coordinates in state["snapshot"]
         if item is value
     )
-    if selection.kind in {"point", "sensor", "device"}:
+    if selection.kind in {"point", "sensor", "device", "light_switch"}:
         old_x, old_y = original
         target = snap_logical_position(ctx.canvas, old_x + dx, old_y + dy)
         if selection.kind == "point":
@@ -1048,6 +1242,10 @@ def delete_map_selection(
     if selection is None or selection.value is None:
         return False
     value = selection.value
+    if selection.kind not in {"point", "sensor", "device", "wall", "door", "light_switch"}:
+        return False
+    if not any(item is value for item in _object_source(ctx, selection.kind, value)):
+        return False
     display_name = (
         selection.kind
         if selection.kind == "point"
@@ -1070,7 +1268,7 @@ def delete_map_selection(
     if selection.kind == "point":
         prompt = "Delete point?"
     else:
-        prompt = f"Delete {selection.kind} '{display_name}'?"
+        prompt = f"Delete {selection.kind.replace('_', ' ')} '{display_name}'?"
     if connected_walls or connected_doors:
         prompt += (
             f"\n\nThis will also remove {len(connected_walls)} connected wall(s)"
@@ -1084,48 +1282,16 @@ def delete_map_selection(
     ):
         return False
 
-    if selection.kind == "device":
-        source = current_devices(ctx)
-        if value not in source:
-            return False
-        source.remove(value)
-        if not preserve_runtime:
-            for sensor in current_sensors(ctx):
-                if getattr(sensor, "associated_device", None) == value.name:
-                    sensor.associated_device = None
-            try:
-                ctx.house_state.active_cycles().pop(value.name, None)
-            except Exception:
-                pass
-    elif selection.kind == "sensor":
-        source = current_sensors(ctx)
-        if value not in source:
-            return False
-        source.remove(value)
-        if not preserve_runtime:
-            try:
-                ctx.house_state.sensor_states().pop(value.name, None)
-            except Exception:
-                pass
-    elif selection.kind == "wall":
-        if value not in current_walls(ctx):
-            return False
+    selections = ([selection]
+        + [MapSelection("wall", wall) for wall in connected_walls]
+        + [MapSelection("door", door) for door in connected_doors])
+    undo_action = _deletion_undo_action(ctx, selections) if not preserve_runtime else None
+    if preserve_runtime and selection.kind == "wall":
         _push_undo_action(ctx, {"kind": "wall_removed", "wall": value})
-        _remove_wall_model(ctx, value)
-    elif selection.kind == "door":
-        _remove_door_model(ctx, value)
-    elif selection.kind == "point":
-        for wall in connected_walls:
-            _remove_wall_model(ctx, wall)
-        for door in connected_doors:
-            _remove_door_model(ctx, door)
-        source = current_points(ctx)
-        if value not in source:
-            return False
-        source.remove(value)
-    else:
-        return False
+    _remove_objects(ctx, selections, preserve_runtime=preserve_runtime)
 
+    if undo_action is not None:
+        _push_undo_action(ctx, undo_action)
     clear_selection(ctx)
     _redraw_editable_objects(ctx)
     return True
@@ -1193,6 +1359,15 @@ def _show_selection_actions(ctx, selection: MapSelection, event) -> None:
     menu.add_separator()
     menu.add_command(label="Details...", command=lambda: _show_details(ctx, selection))
     if selection.kind == "device":
+        if value.type in LIGHT_TYPES:
+            menu.add_command(label="Add switch", command=lambda: add_switch_to_light(ctx, value),
+                             state="normal" if value.light_control == "manual" else "disabled")
+            for control in LIGHT_CONTROLS:
+                menu.add_command(
+                    label=f"Set {control.title()} light",
+                    state="disabled" if value.light_control == control else "normal",
+                    command=lambda mode=control: set_light_control(ctx, value, mode),
+                )
         sensor_names = associated_sensor_names(ctx, value)
         state = "normal" if sensor_names else "disabled"
         menu.add_command(
@@ -1216,7 +1391,7 @@ def _show_selection_actions(ctx, selection: MapSelection, event) -> None:
         )
     menu.add_separator()
     menu.add_command(
-        label=f"Delete {selection.kind}",
+        label=f"Delete {selection.kind.replace('_', ' ')}",
         command=lambda: delete_map_selection(ctx, selection),
     )
     try:
@@ -1350,7 +1525,15 @@ def begin_placement_mode(ctx, label: str, callback) -> None:
     ctx.canvas.unbind("<ButtonPress-3>")
     ctx.canvas.unbind("<B3-Motion>")
     ctx.canvas.unbind("<ButtonRelease-3>")
-    ctx.canvas.bind("<Button-1>", callback)
+    def place(event):
+        sources = (current_points(ctx), current_devices(ctx), current_sensors(ctx))
+        counts = tuple(len(source) for source in sources)
+        result = callback(event)
+        if counts != tuple(len(source) for source in sources):
+            ctx._movement_redo_stack = []
+        return result
+
+    ctx.canvas.bind("<Button-1>", place)
     set_canvas_cursor(ctx.canvas, "crosshair")
     ctx.scenario_menu.entryconfig(label, state="disabled")
     set_canvas_mode(ctx, "placement", f"Mode: {label} — click the grid")
@@ -1368,7 +1551,11 @@ def _point_at_event(ctx, event, *, create: bool = False):
     if not create:
         return None
     x, y = snap_logical_position(ctx.canvas, x, y)
-    return _ensure_reference_point(ctx, x, y, draw=True)
+    count = len(points)
+    point = _ensure_reference_point(ctx, x, y, draw=True)
+    if len(points) != count:
+        ctx._movement_redo_stack = []
+    return point
 
 
 def begin_point_segment_mode(
@@ -1493,6 +1680,7 @@ def begin_point_segment_mode(
             return "break"
         created = callback(state["first"], point)
         if created:
+            ctx._movement_redo_stack = []
             if continuous:
                 return reset_segment()
             return finish(True)
@@ -1529,6 +1717,7 @@ def install_device_inspector(ctx, mode_var) -> None:
     ctx._map_drag_state = None
     ctx._marquee_state = None
     ctx._movement_undo_stack = []
+    ctx._movement_redo_stack = []
     ctx._activate_canvas_select = lambda: activate_select_mode(ctx)
     ctx._activate_canvas_manual = lambda text="Manual: press Start": (
         activate_manual_mode(ctx, text)
@@ -1536,10 +1725,22 @@ def install_device_inspector(ctx, mode_var) -> None:
     ctx._cancel_canvas_action = ctx._activate_canvas_select
     ctx._set_canvas_mode = lambda mode, text: set_canvas_mode(ctx, mode, text)
     ctx.canvas.bind("<Delete>", lambda event: delete_selected_object(ctx, event))
+    ctx.canvas.bind("<Double-Button-1>", lambda event: inspect_light_at_event(ctx, event))
     ctx.canvas.bind("<Control-c>", lambda event: copy_selected_object(ctx, event))
     ctx.canvas.bind("<Control-x>", lambda event: cut_selected_object(ctx, event))
     ctx.canvas.bind("<Control-v>", lambda event: paste_map_object(ctx, event))
     ctx.canvas.bind("<Control-d>", lambda event: duplicate_selected_object(ctx, event))
     ctx.canvas.bind("<Control-z>", lambda event: undo_last_movement(ctx, event))
+    for sequence in ("<Control-y>", "<Control-Shift-z>", "<Control-Shift-Z>"):
+        ctx.canvas.bind(sequence, lambda event: redo_last_movement(ctx, event))
+    if sys.platform == "darwin":
+        for key, callback in (("z", undo_last_movement), ("c", copy_selected_object),
+                              ("x", cut_selected_object), ("v", paste_map_object),
+                              ("d", duplicate_selected_object)):
+            ctx.canvas.bind(f"<Command-{key}>", lambda event, action=callback: action(ctx, event))
+        for sequence in ("<BackSpace>", "<Command-BackSpace>", "<Command-Delete>"):
+            ctx.canvas.bind(sequence, lambda event: delete_selected_object(ctx, event))
+        for sequence in ("<Command-Shift-z>", "<Command-Shift-Z>"):
+            ctx.canvas.bind(sequence, lambda event: redo_last_movement(ctx, event))
     ctx.canvas.bind("<Escape>", lambda _event: clear_selection(ctx))
     activate_select_mode(ctx)

@@ -154,6 +154,39 @@ class ScenarioFilesTests(unittest.TestCase):
         self.assertEqual(ctx.current_file, "original.csv")
         self.info.assert_not_called()
 
+    def test_save_serialization_error_keeps_existing_file_intact_and_reports_failure(self):
+        path = self.write_input("original scenario bytes", "home.csv")
+        ctx = AppContext(window=None, load_active=True, current_file=str(path))
+        ctx.read_devices = [Device("invalid", 10, 10, "Oven", "invalid watts", 0, 0, 100)]
+        with patch.object(scenario.messagebox, "showerror") as error:
+            self.assertFalse(scenario._write_scenario(ctx, path))
+        self.assertEqual(path.read_text(encoding="utf-8"), "original scenario bytes")
+        self.assertEqual(ctx.current_file, str(path))
+        self.info.assert_not_called()
+        error.assert_called_once()
+
+    def test_failed_atomic_replace_preserves_file_and_removes_temporary_output(self):
+        path = self.write_input("original scenario bytes", "home.csv")
+        ctx = AppContext(window=None, load_active=True)
+        with patch.object(scenario.os, "replace", side_effect=PermissionError("file locked")), \
+                patch.object(scenario.messagebox, "showerror") as error:
+            self.assertFalse(scenario._write_scenario(ctx, path))
+        self.assertEqual(path.read_text(encoding="utf-8"), "original scenario bytes")
+        self.assertEqual(list(self.root.iterdir()), [path])
+        self.info.assert_not_called()
+        error.assert_called_once()
+
+    def test_save_as_dialog_error_preserves_current_path_and_returns_to_editor(self):
+        ctx = AppContext(window=None, current_file="original.csv")
+        with patch.object(scenario, "ask_save_file", side_effect=RuntimeError("dialog failed")), \
+                patch.object(scenario.messagebox, "showerror") as error, \
+                patch.object(scenario, "_write_scenario") as write, \
+                patch.object(scenario, "ensure_houses_dir", return_value=self.root):
+            scenario.save_scenario_as(ctx)
+        self.assertEqual(ctx.current_file, "original.csv")
+        write.assert_not_called()
+        error.assert_called_once()
+
     def test_save_as_updates_current_file_only_after_successful_write(self):
         ctx = SimpleNamespace(current_file="old.csv")
         destination = str(self.root / "new.csv")

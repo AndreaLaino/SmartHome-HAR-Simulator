@@ -149,6 +149,14 @@ def ask_open_files(title: str = 'Open files', initialdir: Optional[str] = None, 
 
 
 def ask_save_file(title: str = 'Save file', initialdir: Optional[str] = None, filetypes: Optional[List] = None, initialfile: Optional[str] = None, defaultextension: Optional[str] = None) -> Optional[str]:
+    if sys.platform == 'darwin':
+        from app.io.save_dialog import ask_save_path
+
+        # A native Tk/AppKit save-panel abort cannot be caught by Python's
+        # exception handler. Keep this path entirely within ordinary Tk widgets.
+        res = ask_save_path(title=title, initialdir=initialdir, filetypes=filetypes,
+                            initialfile=initialfile, defaultextension=defaultextension)
+        return res.get('path') if res else None
     res = _run_direct('save', title=title, initialdir=initialdir, filetypes=filetypes, initialfile=initialfile, defaultextension=defaultextension)
     if not res:
         res = _run_helper('save', title=title, initialdir=initialdir, filetypes=filetypes, initialfile=initialfile, defaultextension=defaultextension)

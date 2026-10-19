@@ -6,6 +6,7 @@ from typing import Optional
 
 from consumption_profiles import consumption_profiles, get_device_consumption
 from models import Sensor, Device, Point, Door, Wall
+from lighting import LIGHT_TYPES
 from label_layout import create_map_label, layout_map_labels
 from canvas_zoom import to_canvas, to_canvas_length
 
@@ -500,6 +501,10 @@ def update_devices_consumption(canvas, devices, delta_seconds, timer_app_instanc
             device.current_consumption,
             device.consumption_direction,
         )
+
+        if type in LIGHT_TYPES:
+            device.current_consumption = float(power) if state == 1 else 0.0
+            continue
 
         if state == 1:
             if name in active_cycles_store:

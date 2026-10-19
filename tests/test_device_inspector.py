@@ -882,6 +882,73 @@ class DeviceInspectorTests(unittest.TestCase):
         self.assertIsNone(ctx._selected_object)
         redraw.assert_called_once_with(ctx)
 
+    def test_undo_device_deletion_restores_sensor_links_cycle_and_integrated_history(self):
+        from lighting import SMART_LIGHT, with_integrated_light_meters
+
+        ctx, device, sensor = self.make_context()
+        device.type = SMART_LIGHT
+        meter = with_integrated_light_meters(ctx.read_sensors, ctx.read_devices)[-1]
+        ctx.house_state.sensor_states()[meter.name] = {"type": "Smart Meter", "consumption": [20]}
+        ctx.house_state.sensor_states()[sensor.name] = {"consumption": [10]}
+        ctx.house_state.active_cycles()[device.name] = {"start_time": "saved start"}
+        with (
+            patch("app.ui.device_inspector._redraw_editable_objects"),
+            patch("app.ui.device_inspector._draw_selections"),
+        ):
+            self.assertTrue(delete_device(ctx, device, confirm=False))
+            self.assertNotIn(meter.name, ctx.house_state.sensor_states())
+            ctx.house_state.sensor_states()[sensor.name]["consumption"].append(12)
+            self.assertEqual(undo_last_movement(ctx), "break")
+        self.assertIs(ctx.read_devices[0], device)
+        self.assertEqual(sensor.associated_device, device.name)
+        self.assertEqual(ctx.house_state.sensor_states()[meter.name]["consumption"], [20])
+        self.assertEqual(ctx.house_state.sensor_states()[sensor.name]["consumption"], [10, 12])
+        self.assertEqual(ctx.house_state.active_cycles()[device.name], {"start_time": "saved start"})
+
+    def test_undo_sensor_and_door_deletions_restores_objects_and_sensor_history(self):
+        ctx, _device, sensor = self.make_context()
+        door = Door(20, 0, 20, 20, "close")
+        ctx.read_doors.append(door)
+        ctx.house_state.sensor_states()[sensor.name] = {"state": [0, 1]}
+        with (
+            patch("app.ui.device_inspector._redraw_editable_objects"),
+            patch("app.ui.device_inspector._draw_selections"),
+        ):
+            delete_map_selection(ctx, MapSelection("sensor", sensor), confirm=False)
+            delete_map_selection(ctx, MapSelection("door", door), confirm=False)
+            undo_last_movement(ctx)
+            self.assertIs(ctx.read_doors[0], door)
+            self.assertEqual(door.state, "close")
+            self.assertEqual(ctx.read_sensors, [])
+            undo_last_movement(ctx)
+        self.assertIs(ctx.read_sensors[0], sensor)
+        self.assertEqual(ctx.house_state.sensor_states()[sensor.name], {"state": [0, 1]})
+
+    def test_undo_point_deletion_restores_attached_segments_and_room_override(self):
+        ctx, _device, _sensor = self.make_context()
+        corner = Point("corner", 0, 0)
+        other = Point("other", 20, 0)
+        wall = Wall(0, 0, 20, 0)
+        door = Door(0, 0, 0, 20, "close")
+        ctx.r_points[:] = [corner, other]
+        ctx.read_walls.append(wall)
+        ctx.read_doors.append(door)
+        ctx.room_overrides = {"room-1": "Kitchen"}
+        with (
+            patch("read.read_walls_coordinates", [wall]) as geometry,
+            patch("app.ui.device_inspector._redraw_editable_objects"),
+            patch("app.ui.device_inspector._draw_selections"),
+        ):
+            delete_map_selection(ctx, MapSelection("point", corner), confirm=False)
+            self.assertEqual((ctx.read_walls, ctx.read_doors, geometry), ([], [], []))
+            ctx.room_overrides.clear()
+            undo_last_movement(ctx)
+            self.assertEqual(geometry, [wall])
+        self.assertEqual(ctx.r_points, [corner, other])
+        self.assertIs(ctx.read_walls[0], wall)
+        self.assertIs(ctx.read_doors[0], door)
+        self.assertEqual(ctx.room_overrides, {"room-1": "Kitchen"})
+
     def test_sensor_wall_and_door_can_be_deleted(self):
         ctx, _device, sensor = self.make_context()
         wall = Wall(0, 0, 20, 0)

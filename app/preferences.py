@@ -13,6 +13,7 @@ CONFIRMATION_PREFERENCES = {
     "confirm_delete_point": "Delete points",
     "confirm_delete_sensor": "Delete sensors",
     "confirm_delete_device": "Delete devices",
+    "confirm_delete_light_switch": "Delete light switches",
     "confirm_delete_wall": "Delete walls",
     "confirm_delete_door": "Delete doors",
     "confirm_save_scenario": "Save a scenario",

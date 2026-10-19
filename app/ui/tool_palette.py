@@ -240,3 +240,17 @@ class ToolPalette:
                 8, 8, 40, 40, start=90, extent=45,
                 outline=self._colors["icon"], dash=(2, 2),
             )
+        elif icon == "undo":
+            canvas.create_line(16, 7, 7, 14, 16, 21, fill=self._colors["icon"], width=2)
+            canvas.create_line(8, 14, 20, 14, 25, 18, 25, 26,
+                               fill=self._colors["icon"], width=2)
+        elif icon == "redo":
+            canvas.create_line(18, 7, 27, 14, 18, 21, fill=self._colors["icon"], width=2)
+            canvas.create_line(26, 14, 14, 14, 9, 18, 9, 26,
+                               fill=self._colors["icon"], width=2)
+        elif icon == "delete":
+            canvas.create_rectangle(11, 12, 25, 28, outline=self._colors["icon"], width=2)
+            canvas.create_line(8, 10, 28, 10, fill=self._colors["icon"], width=2)
+            canvas.create_line(14, 10, 14, 6, 22, 6, 22, 10, fill=self._colors["icon"], width=2)
+            for x in (15, 21):
+                canvas.create_line(x, 15, x, 25, fill=self._colors["icon"], width=1)

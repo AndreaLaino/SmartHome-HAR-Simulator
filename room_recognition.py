@@ -7,6 +7,7 @@ from collections import Counter, defaultdict
 from typing import Iterable
 
 from models import Device, Door, Point, Room, Sensor, Wall
+from lighting import SMART_LIGHT, with_integrated_light_meters
 
 
 ROOM_TYPES = (
@@ -344,6 +345,42 @@ def _classify_room(
     return best_type, round(min(confidence, 0.99), 2)
 
 
+def update_room_power(rooms: Iterable[Room], sensors: Iterable[Sensor], devices: Iterable[Device]) -> None:
+    """Sum current meter watts, assigning each meter to at most one room.
+
+    A linked meter follows its device; an unlinked meter uses its own position.
+    On a shared boundary, the room with the first stable ID owns the reading.
+    """
+    room_list = sorted(rooms, key=lambda room: room.room_id)
+    device_list = list(devices)
+    devices_by_name = {device.name: device for device in device_list}
+    for room in room_list:
+        room.smartmeter_names.clear()
+        room.total_power_w = 0.0
+    seen = set()
+    for sensor in with_integrated_light_meters(sensors, device_list):
+        if sensor.type != "Smart Meter" or sensor.name in seen:
+            continue
+        seen.add(sensor.name)
+        source = devices_by_name.get(sensor.associated_device, sensor)
+        if getattr(source, "type", None) == SMART_LIGHT and not sensor.integrated:
+            # The built-in meter already measures this load.
+            continue
+        room = next(
+            (room for room in room_list if point_in_polygon(source.x, source.y, room.polygon)),
+            None,
+        )
+        if room is None:
+            continue
+        room.smartmeter_names.append(sensor.name)
+        try:
+            watts = float(sensor.consumption)
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(watts) and watts >= 0:
+            room.total_power_w += watts
+
+
 def recognize_rooms(
     walls: Iterable[Wall],
     doors: Iterable[Door],
@@ -352,8 +389,8 @@ def recognize_rooms(
     points: Iterable[Point],
     overrides: dict[str, str] | None = None,
 ) -> list[Room]:
-    sensor_list = list(sensors)
     device_list = list(devices)
+    sensor_list = with_integrated_light_meters(sensors, device_list)
     point_list = list(points)
     overrides = overrides or {}
     rooms = []
@@ -379,4 +416,5 @@ def recognize_rooms(
                 point_names=[point.name for point in room_points],
             )
         )
+    update_room_power(rooms, sensor_list, device_list)
     return rooms

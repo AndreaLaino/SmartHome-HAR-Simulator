@@ -1,17 +1,21 @@
 """Opt-in real Tk smoke checks; run with SIMULATOR_GUI_TESTS=1.
 
-The root stays withdrawn. No credential, hardware, file-picker, or message-box
+Most checks keep the root withdrawn; mouse and keyboard checks briefly map it.
+No credential, hardware, file-picker, or message-box
 interaction is allowed, and all mutable files live in a temporary directory.
 On Linux, run the opted-in suite under xvfb-run when no display is available.
 """
 
+import copy
 import os
+import sys
 import tempfile
 import time
 import tkinter as tk
 import unittest
 from contextlib import ExitStack
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import device
@@ -24,7 +28,19 @@ import wall
 from app import preferences, save_paths
 from app.context import AppContext
 from app.io import scenario
+from app.io import safe_dialog
+from app.io.save_dialog import SavePathDialog
 from app.ui.main_ui import build_home_ui
+from app.ui.rooms import open_rooms_ui
+from app.ui import device_inspector as inspector
+from app.ui.device_inspector import (
+    MapSelection, set_light_control, _append_pasted_object, _redraw_editable_objects,
+    _set_selected_objects,
+)
+from models import Device, Sensor
+from sim import interaction, render_simulation_state
+from canvas_zoom import to_canvas
+from lighting import light_switch_position
 
 
 GUI_ENABLED = os.environ.get("SIMULATOR_GUI_TESTS") == "1"
@@ -161,6 +177,155 @@ class TkSmokeTests(unittest.TestCase):
         self.assertTrue(os.path.samefile(self.ctx.current_file, saved))
         self.assertTrue(path.exists())
 
+    def test_save_as_tk_chooser_confirmation_and_reload_leave_application_running(self):
+        self.load_home()
+        self.window.geometry("1000x700")
+        self.window.deiconify()
+        self.pump()
+        self.ctx.preferences["confirm_save_scenario"] = True
+        light = Device("lamp", 100, 100, "Smart Light", 7.5, 0, 7.5, 7.5)
+        self.ctx.read_devices.append(light)
+        _redraw_editable_objects(self.ctx)
+        light.light_switches[0].x, light.light_switches[0].y = 25, 150
+        destination = self.root / "saved home.csv"
+        original_choose = SavePathDialog.choose
+        confirmed = []
+
+        def find_button(parent, label):
+            for child in parent.winfo_children():
+                if isinstance(child, tk.Button) and child.cget("text") == label:
+                    return child
+                result = find_button(child, label)
+                if result is not None:
+                    return result
+            return None
+
+        def confirm_save():
+            dialog = next((child for child in self.window.winfo_children()
+                           if isinstance(child, tk.Toplevel) and child.title() == "Save"), None)
+            if dialog is None:
+                self.window.after(10, confirm_save)
+                return
+            confirmed.append(True)
+            find_button(dialog, "Yes").invoke()
+
+        def complete_chooser(dialog, *args, **kwargs):
+            def save():
+                dialog.set_selection("saved home")
+                self.window.after_idle(confirm_save)
+                dialog.ok_button.invoke()
+
+            self.window.after(100, save)
+            return original_choose(dialog, *args, **kwargs)
+
+        with patch.object(safe_dialog.sys, "platform", "darwin"), \
+                patch.object(SavePathDialog, "choose", new=complete_chooser), \
+                patch.object(scenario, "ensure_houses_dir", return_value=self.root), \
+                patch("tkinter.filedialog.asksaveasfilename", side_effect=AssertionError("Native save panel must not be used")), \
+                patch.object(safe_dialog, "_run_helper", side_effect=AssertionError("Native helper must not be used")), \
+                patch.object(self.window, "quit", side_effect=AssertionError("Saving must not quit the application")), \
+                patch.object(scenario.messagebox, "showinfo") as info:
+            self.ctx.file_menu.invoke("Save As")
+            self.pump()
+            self.assertEqual(confirmed, [True])
+            self.assertEqual(self.ctx.current_file, str(destination))
+            self.assertTrue(destination.is_file())
+            self.assertTrue(self.window.winfo_exists())
+            info.assert_called_once()
+        self.assertTrue(scenario.load_scenario_from_path(self.ctx, self.ctx.canvas, destination))
+        self.pump()
+        loaded = next(device for device in self.ctx.read_devices if device.name == "lamp")
+        self.assertEqual((loaded.light_switches[0].x, loaded.light_switches[0].y), (25, 150))
+
+        def cancel_chooser(dialog, *args, **kwargs):
+            self.window.after(100, dialog.cancel_command)
+            return original_choose(dialog, *args, **kwargs)
+
+        with patch.object(safe_dialog.sys, "platform", "darwin"), \
+                patch.object(SavePathDialog, "choose", new=cancel_chooser), \
+                patch.object(scenario, "ensure_houses_dir", return_value=self.root), \
+                patch.object(self.window, "quit", side_effect=AssertionError("Cancel must not quit the application")):
+            self.ctx.file_menu.invoke("Save As")
+            self.pump()
+        self.assertEqual(self.ctx.current_file, str(destination))
+        alive = []
+        self.window.after_idle(lambda: alive.append(True))
+        self.pump()
+        self.assertEqual(alive, [True])
+        self.window.withdraw()
+
+    def test_save_menu_actions_return_before_opening_modal_windows(self):
+        # A direct Menu.invoke() alone misses the macOS menu-tracking loop.
+        # No save dialog/confirmation may start on the menu callback's stack.
+        for label, action in (("Save", "save_scenario"), ("Save As", "save_scenario_as")):
+            with self.subTest(label=label), patch(f"app.ui.main_ui.{action}") as save:
+                self.ctx.file_menu.invoke(label)
+                save.assert_not_called()
+                self.pump()
+                save.assert_called_once_with(self.ctx)
+
+    def test_delete_undo_redo_buttons_and_native_shortcuts_restore_selected_device(self):
+        self.load_home()
+        # Mouse/key events need a mapped target; this check briefly shows the window.
+        self.window.geometry("1000x700")
+        self.window.deiconify()
+        self.pump()
+        device = self.ctx.read_devices[0]
+        _set_selected_objects(self.ctx, [MapSelection("device", device)])
+        self.ctx.preferences["confirm_delete_device"] = False
+        palette = self.ctx._tool_palette
+        for key in ("delete", "undo", "redo"):
+            self.assertTrue(palette._buttons[key].find_all(), f"{key} must have a visible icon")
+        palette._buttons["delete"].event_generate("<Button-1>", x=17, y=17)
+        self.pump()
+        self.assertEqual(self.ctx.read_devices, [])
+        palette._buttons["undo"].event_generate("<Button-1>", x=17, y=17)
+        self.pump()
+        self.assertIs(self.ctx.read_devices[0], device)
+        palette._buttons["redo"].event_generate("<Button-1>", x=17, y=17)
+        self.pump()
+        self.assertEqual(self.ctx.read_devices, [])
+        palette._buttons["undo"].event_generate("<Button-1>", x=17, y=17)
+        self.pump()
+        self.assertIs(self.ctx.read_devices[0], device)
+
+        canvas = self.ctx.canvas
+        delete_keys = ("<Command-BackSpace>", "<Command-Delete>", "<BackSpace>") if sys.platform == "darwin" else ("<Delete>",)
+        undo_key = "<Command-z>" if sys.platform == "darwin" else "<Control-z>"
+        redo_keys = (("<Command-Shift-z>", "<Command-Shift-Z>") if sys.platform == "darwin"
+                     else ("<Control-Shift-z>", "<Control-Shift-Z>", "<Control-y>"))
+        for delete_key in delete_keys:
+            canvas.focus_force()
+            self.pump()
+            canvas.event_generate(delete_key)
+            self.pump()
+            self.assertEqual(self.ctx.read_devices, [], delete_key)
+            canvas.event_generate(undo_key)
+            self.pump()
+            self.assertIs(self.ctx.read_devices[0], device)
+        for redo_key in redo_keys:
+            canvas.event_generate(redo_key)
+            self.pump()
+            self.assertEqual(self.ctx.read_devices, [], redo_key)
+            canvas.event_generate(undo_key)
+            self.pump()
+            self.assertIs(self.ctx.read_devices[0], device)
+
+        entry = tk.Entry(self.ctx.timer_frame)
+        entry.pack()
+        entry.insert(0, "editable text")
+        entry.focus_force()
+        self.pump()
+        entry.event_generate(delete_keys[0])
+        entry.event_generate(redo_keys[0])
+        self.pump()
+        self.assertIs(self.ctx.read_devices[0], device, "text editing must not delete map objects")
+        self.assertTrue(self.ctx._movement_redo_stack)
+        self.load_home()
+        self.assertEqual(self.ctx._movement_undo_stack, [])
+        self.assertEqual(self.ctx._movement_redo_stack, [])
+        self.window.withdraw()
+
     def test_manual_buttons_start_pause_skip_resume_and_reset_real_timer(self):
         self.load_home()
         self.ctx.simulation_menu.invoke("Manual")
@@ -199,6 +364,236 @@ class TkSmokeTests(unittest.TestCase):
         self.assertEqual(self.ctx._canvas_mode, "select")
         self.assertIsNone(self.ctx.house_state.interaction_log_state()["interaction_file"])
         self.assertTrue(log_path.is_file())
+
+    def test_lighting_dialog_shows_configurable_watts(self):
+        frame = tk.Frame(self.window)
+        dialog = device.DeviceDialog.__new__(device.DeviceDialog)
+        dialog.body(frame)
+        self.assertIn("Normal Light", dialog.device_type["values"])
+        self.assertIn("Smart Light", dialog.device_type["values"])
+        self.assertEqual(dialog.lighting_power.get(), "10")
+        self.assertEqual(dialog.lighting_power.winfo_manager(), "")
+        dialog.device_type.set("Normal Light")
+        dialog.device_type.event_generate("<<ComboboxSelected>>")
+        self.pump()
+        self.assertEqual(dialog.lighting_power.winfo_manager(), "grid")
+        self.assertIn("separate Smart Meter", dialog.lighting_meter_label.cget("text"))
+        dialog.device_type.set("Smart Light")
+        dialog.device_type.event_generate("<<ComboboxSelected>>")
+        self.pump()
+        self.assertEqual(dialog.lighting_power.winfo_manager(), "grid")
+        self.assertIn("integrated", dialog.lighting_meter_label.cget("text"))
+        self.assertEqual(dialog.lighting_control.get(), "Manual")
+        self.assertEqual(dialog.lighting_control.winfo_manager(), "grid")
+        dialog.lighting_control.set("Automatic")
+        dialog.device_name.insert(0, "automatic light")
+        self.assertTrue(dialog.validate())
+        dialog.apply()
+        self.assertEqual(dialog.result[-1], "automatic")
+        dialog.device_type.set("Oven")
+        dialog.device_type.event_generate("<<ComboboxSelected>>")
+        self.pump()
+        self.assertEqual(dialog.lighting_power.winfo_manager(), "")
+        self.assertEqual(dialog.lighting_control.winfo_manager(), "")
+        frame.destroy()
+
+    def check_light_only_manual_simulation(self, light_type):
+        content = SMOKE_SCENARIO.replace("motion,50,50,PIR,0,1,1,0,90,None,None\n", "")
+        content = content.replace("oven,100,100,Oven,1000,0,100,1000,0,1",
+                                  f"lamp,100,100,{light_type},7.5,0,7.5,7.5,0,1")
+        path = self.root / "lights-only.csv"
+        path.write_text(content, encoding="utf-8")
+        self.assertTrue(scenario.load_scenario_from_path(self.ctx, self.ctx.canvas, path))
+        self.ctx.simulation_menu.invoke("Manual")
+        self.pump()
+        timer = self.ctx.timer_app_instance
+        timer.start_stop_button.invoke()
+        self.pump()
+        light = self.ctx.read_devices[0]
+        x, y = to_canvas(self.ctx.canvas, *light_switch_position(light))
+        event = SimpleNamespace(x=x - self.ctx.canvas.canvasx(0), y=y - self.ctx.canvas.canvasy(0))
+        interaction(self.ctx.canvas, timer, event, self.ctx.activity_label,
+                    self.ctx.house_state, self.ctx._manual_runtime_sources)
+        timer.advance_button.invoke()
+        self.pump()
+        self.assertEqual(self.ctx.read_devices[0].state, 1)
+        self.assertEqual(self.ctx.read_devices[0].current_consumption, 7.5)
+        self.assertEqual(self.ctx.canvas.itemcget("light_switch_label:lamp", "text"), "Switch: ON")
+        self.assertEqual(self.ctx.read_sensors, [])
+        if light_type == "Smart Light":
+            self.assertEqual(self.ctx.rooms[0].total_power_w, 7.5)
+            self.assertEqual(self.ctx.house_state.sensor_states()["smartmeter_lamp"]["consumption"][-1], 7.5)
+        else:
+            self.assertEqual(self.ctx.rooms[0].smartmeter_names, [])
+            self.assertEqual(self.ctx.rooms[0].total_power_w, 0)
+        interaction(self.ctx.canvas, timer, event, self.ctx.activity_label,
+                    self.ctx.house_state, self.ctx._manual_runtime_sources)
+        self.pump()
+        self.assertEqual(light.state, 0)
+        self.assertEqual(self.ctx.canvas.itemcget("light_switch_label:lamp", "text"), "Switch: OFF")
+
+    def test_smart_light_operates_with_no_separate_sensors(self):
+        self.check_light_only_manual_simulation("Smart Light")
+
+    def test_normal_light_operates_without_a_meter(self):
+        self.check_light_only_manual_simulation("Normal Light")
+
+    def test_automatic_light_follows_room_presence_and_control_change_adds_switch(self):
+        content = SMOKE_SCENARIO.replace("motion,50,50,PIR,0,1,1,0,90,None,None\n", "")
+        content = content.replace("oven,100,100,Oven,1000,0,100,1000,0,1",
+                                  "lamp,100,100,Smart Light,7.5,0,7.5,7.5,0,1,automatic")
+        path = self.root / "automatic-light.csv"
+        path.write_text(content, encoding="utf-8")
+        self.assertTrue(scenario.load_scenario_from_path(self.ctx, self.ctx.canvas, path))
+        self.assertFalse(self.ctx.canvas.find_withtag("light_switch"))
+        self.ctx.simulation_menu.invoke("Manual")
+        self.pump()
+        timer = self.ctx.timer_app_instance
+        timer.start_stop_button.invoke()
+        self.pump()
+        light = self.ctx.read_devices[0]
+        runtime = self.ctx._manual_runtime_sources
+        for position, expected in (((50, 150), 1), ((250, 150), 0)):
+            x, y = to_canvas(self.ctx.canvas, *position)
+            event = SimpleNamespace(x=x - self.ctx.canvas.canvasx(0), y=y - self.ctx.canvas.canvasy(0))
+            interaction(self.ctx.canvas, timer, event, self.ctx.activity_label, self.ctx.house_state, runtime)
+            timer.advance_button.invoke()
+            self.pump()
+            self.assertEqual(light.state, expected)
+            self.assertEqual(self.ctx.rooms[0].total_power_w, expected * 7.5)
+            self.assertFalse(self.ctx.canvas.find_withtag("light_switch"))
+
+        set_light_control(self.ctx, light, "manual")
+        self.pump()
+        self.assertTrue(self.ctx.canvas.find_withtag("light_switch:lamp"))
+        duplicate = copy.deepcopy(light)
+        duplicate.x += 25
+        _append_pasted_object(self.ctx, MapSelection("device", duplicate))
+        _redraw_editable_objects(self.ctx)
+        self.pump()
+        self.assertTrue(self.ctx.canvas.find_withtag(f"light_switch:{duplicate.name}"))
+        set_light_control(self.ctx, light, "automatic")
+        self.pump()
+        self.assertFalse(self.ctx.canvas.find_withtag("light_switch:lamp"))
+        self.assertTrue(self.ctx.canvas.find_withtag(f"light_switch:{duplicate.name}"))
+
+    def test_independent_switch_drag_double_click_details_and_switch_management(self):
+        self.load_home()
+        light = Device("lamp", 100, 100, "Smart Light", 7.5, 0, 7.5, 7.5)
+        self.ctx.read_devices[:] = [light]
+        self.ctx.preferences["confirm_delete_light_switch"] = False
+        _redraw_editable_objects(self.ctx)
+        self.window.geometry("1000x700")
+        self.window.deiconify()
+        self.pump()
+        canvas = self.ctx.canvas
+
+        def event_at(x, y):
+            x, y = to_canvas(canvas, x, y)
+            return SimpleNamespace(x=x - canvas.canvasx(0), y=y - canvas.canvasy(0))
+
+        switch = light.light_switches[0]
+        inspector.begin_selection_drag(self.ctx, event_at(switch.x, switch.y))
+        self.assertEqual(self.ctx._selected_object.kind, "light_switch")
+        inspector.finish_selection_drag(self.ctx, event_at(25, 150))
+        self.pump()
+        self.assertEqual((switch.x, switch.y, light.x, light.y), (25, 150, 100, 100))
+        inspector.begin_selection_drag(self.ctx, event_at(light.x, light.y))
+        inspector.finish_selection_drag(self.ctx, event_at(150, 100))
+        self.pump()
+        self.assertEqual((switch.x, switch.y, light.x, light.y), (25, 150, 150, 100))
+
+        def double_click(timestamp):
+            event = event_at(light.x, light.y)
+            for sequence, delay in (("<ButtonPress-1>", 0), ("<ButtonRelease-1>", 10),
+                                    ("<ButtonPress-1>", 100), ("<ButtonRelease-1>", 110)):
+                canvas.event_generate(sequence, x=int(event.x), y=int(event.y), time=timestamp + delay)
+                self.pump()
+
+        def button(parent, text):
+            for child in parent.winfo_children():
+                if isinstance(child, tk.Button) and child.cget("text") == text:
+                    return child
+                found = button(child, text)
+                if found is not None:
+                    return found
+            return None
+
+        double_click(1000)
+        details = self.ctx._light_details_windows[id(light)]
+        self.assertEqual(details._light_info_values["Type"].get(), "Smart Light")
+        self.assertEqual(details._light_info_values["Position"].get(), "(150, 100)")
+        self.assertEqual(details._light_info_values["Metering"].get(), "Integrated Smart Meter")
+        tree = details._light_switch_tree
+        self.assertEqual(len(tree.get_children()), 1)
+        button(details, "Add switch").invoke()
+        self.pump()
+        self.assertEqual(len(light.light_switches), 2)
+        self.assertEqual(len(tree.get_children()), 2)
+        button(details, "Remove selected switch").invoke()
+        self.pump()
+        self.assertEqual(light.light_switches, [switch])
+        inspector.undo_last_movement(self.ctx)
+        deadline = time.monotonic() + 1
+        while len(tree.get_children()) != 2 and time.monotonic() < deadline:
+            self.pump()
+            time.sleep(0.01)
+        self.assertEqual(len(tree.get_children()), 2)
+        for switch_name in list(tree.get_children()):
+            tree.selection_set(switch_name)
+            self.pump()
+            button(details, "Remove selected switch").invoke()
+            self.pump()
+        self.assertEqual(light.light_switches, [])
+        self.assertEqual(self.ctx.read_devices, [light])
+        details.destroy()
+        self.ctx.simulation_menu.invoke("Manual")
+        self.pump()
+        self.ctx.timer_app_instance.start_stop_button.invoke()
+        self.pump()
+        double_click(2000)
+        details = self.ctx._light_details_windows[id(light)]
+        self.assertEqual(len(details._light_switch_tree.get_children()), 0)
+        self.assertEqual(light.state, 0)
+        details.destroy()
+        self.window.withdraw()
+
+    def test_room_map_and_window_show_live_meter_watts_and_cancel_refresh_on_close(self):
+        self.load_home()
+        self.ctx.read_devices.append(Device("lamp", 75, 75, "Lighting", 7.5, 1, 7.5, 7.5))
+        meter = Sensor("light meter", 75, 75, "Smart Meter", 0, 5000, 1, 0,
+                       consumption=7.5, associated_device="lamp")
+        self.ctx.read_sensors.append(meter)
+        open_rooms_ui(self.ctx)
+        self.pump()
+        room_window = next(child for child in self.window.winfo_children()
+                           if isinstance(child, tk.Toplevel) and child.title() == "Room recognition")
+
+        def labels(parent):
+            result = []
+            for child in parent.winfo_children():
+                if isinstance(child, tk.Label):
+                    result.append(child.cget("text"))
+                result.extend(labels(child))
+            return result
+
+        self.assertIn("7.5 W", labels(room_window))
+        meter.consumption = 12.5
+        render_simulation_state(self.ctx.canvas, {
+            "devices": self.ctx.read_devices, "sensors": self.ctx.read_sensors, "rooms": self.ctx.rooms,
+        })
+        room_text = self.ctx.canvas.itemcget(f"room_label:{self.ctx.rooms[0].room_id}", "text")
+        self.assertIn("Power: 12.5 W", room_text)
+        deadline = time.monotonic() + 0.6
+        while time.monotonic() < deadline:
+            self.pump()
+            time.sleep(0.01)
+        self.assertIn("12.5 W", labels(room_window))
+        jobs_before = set(self.window.tk.splitlist(self.window.tk.call("after", "info")))
+        room_window.destroy()
+        self.pump()
+        jobs_after = set(self.window.tk.splitlist(self.window.tk.call("after", "info")))
+        self.assertEqual(len(jobs_before - jobs_after), 1)
 
 
 if __name__ == "__main__":

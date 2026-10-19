@@ -6,7 +6,7 @@ from tkinter import ttk
 from app.context import AppContext
 from label_layout import create_map_label, layout_map_labels
 from canvas_zoom import to_canvas
-from room_recognition import ROOM_TYPES, recognize_rooms
+from room_recognition import ROOM_TYPES, recognize_rooms, update_room_power
 
 
 def _runtime_sources(ctx: AppContext):
@@ -26,6 +26,23 @@ def _runtime_sources(ctx: AppContext):
     from wall import walls_coordinates
 
     return points, walls_coordinates, sensors, devices, doors
+
+
+def _power_text(room) -> str:
+    return f"{room.total_power_w:.1f} W" if room.smartmeter_names else "No smart meters"
+
+
+def _room_label(index, room) -> str:
+    suffix = " (manual)" if room.manual_type else ""
+    return f"Room {index}: {room.room_type}{suffix}\nPower: {_power_text(room)}"
+
+
+def render_room_power(canvas, rooms) -> None:
+    if canvas is None or not bool(getattr(canvas, "_show_room_types", True)):
+        return
+    for index, room in enumerate(rooms, start=1):
+        canvas.itemconfig(f"room_label:{room.room_id}", text=_room_label(index, room))
+    layout_map_labels(canvas)
 
 
 def draw_rooms(ctx: AppContext) -> None:
@@ -63,15 +80,14 @@ def draw_rooms(ctx: AppContext) -> None:
             tags="room_overlay",
         )
         center_x, center_y = room.centroid
-        suffix = " (manual)" if room.manual_type else ""
         create_map_label(
             canvas,
             center_x,
             center_y,
-            text=f"Room {index}: {room.room_type}{suffix}",
+            text=_room_label(index, room),
             fill=color,
             font=("Helvetica", 11, "bold"),
-            tags="room_overlay",
+            tags=("room_overlay", f"room_label:{room.room_id}"),
             kind="room",
         )
     layout_map_labels(canvas)
@@ -87,6 +103,9 @@ def refresh_rooms(ctx: AppContext, *, draw: bool = True):
         points,
         overrides=ctx.room_overrides,
     )
+    runtime_sources = getattr(ctx, "_manual_runtime_sources", None)
+    if isinstance(runtime_sources, dict):
+        runtime_sources["rooms"] = ctx.rooms
     valid_ids = {room.room_id for room in ctx.rooms}
     ctx.room_overrides = {
         room_id: room_type
@@ -102,7 +121,7 @@ def open_rooms_ui(ctx: AppContext) -> None:
     rooms = refresh_rooms(ctx, draw=True)
     window = tk.Toplevel(ctx.window)
     window.title("Room recognition")
-    window.geometry("850x520")
+    window.geometry("1000x520")
 
     if not rooms:
         tk.Label(
@@ -124,13 +143,14 @@ def open_rooms_ui(ctx: AppContext) -> None:
     canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
     scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
 
-    headers = ("Room", "Automatic", "Confidence", "Sensors", "Devices", "Final label")
+    headers = ("Room", "Automatic", "Confidence", "Sensors", "Devices", "Power", "Final label")
     for column, header in enumerate(headers):
         tk.Label(rows, text=header, font=("Helvetica", 10, "bold")).grid(
             row=0, column=column, padx=6, pady=6, sticky="w"
         )
 
     selections = {}
+    power_labels = {}
     choices = ("Automatic",) + tuple(room_type for room_type in ROOM_TYPES if room_type != "Unknown")
     for row_index, room in enumerate(rooms, start=1):
         tk.Label(rows, text=f"Room {row_index}").grid(row=row_index, column=0, padx=6, pady=5, sticky="w")
@@ -142,6 +162,9 @@ def open_rooms_ui(ctx: AppContext) -> None:
         tk.Label(rows, text=", ".join(room.device_names) or "-").grid(
             row=row_index, column=4, padx=6, pady=5, sticky="w"
         )
+        power_label = tk.Label(rows, text=_power_text(room))
+        power_label.grid(row=row_index, column=5, padx=6, pady=5, sticky="w")
+        power_labels[room.room_id] = power_label
         variable = tk.StringVar(value=room.manual_type or "Automatic")
         selections[room.room_id] = variable
         ttk.Combobox(
@@ -150,7 +173,32 @@ def open_rooms_ui(ctx: AppContext) -> None:
             values=choices,
             state="readonly",
             width=16,
-        ).grid(row=row_index, column=5, padx=6, pady=5, sticky="w")
+        ).grid(row=row_index, column=6, padx=6, pady=5, sticky="w")
+
+    tk.Label(
+        window,
+        text="Power sums current Smart Meter readings for devices in each room. Unmetered devices are excluded.",
+        anchor="w",
+    ).pack(fill=tk.X, padx=10, pady=(0, 10))
+
+    refresh_job = None
+
+    def refresh_power():
+        nonlocal refresh_job
+        _points, _walls, sensors, devices, _doors = _runtime_sources(ctx)
+        update_room_power(ctx.rooms, sensors, devices)
+        current_rooms = {room.room_id: room for room in ctx.rooms}
+        for room_id, label in power_labels.items():
+            room = current_rooms.get(room_id)
+            label.configure(text=_power_text(room) if room is not None else "Room removed")
+        refresh_job = window.after(500, refresh_power)
+
+    def cancel_refresh(event):
+        if event.widget is window and refresh_job is not None:
+            window.after_cancel(refresh_job)
+
+    window.bind("<Destroy>", cancel_refresh, add="+")
+    refresh_power()
 
     def apply_changes():
         ctx.room_overrides.clear()
