@@ -3,6 +3,7 @@ from utils import draw_sensor, raise_overlay_labels
 from label_layout import create_map_label
 from canvas_zoom import to_canvas, to_canvas_length
 import csv
+import io
 from models import Point, Sensor, Device, Door, Wall
 
 # Global lists to save data read from file
@@ -25,13 +26,23 @@ def read_coordinates_from_file(file_path):
     current_section = None
     pending_walls: list[tuple[str, str]] = []
 
-    with open(file_path, "r") as csvfile:
+    with open(file_path, "rb") as source:
+        raw = source.read()
+    try:
+        content = raw.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        # Earlier Windows releases saved using the default ANSI encoding.
+        content = raw.decode("cp1252")
+
+    with io.StringIO(content, newline="") as csvfile:
         reader = csv.reader(csvfile)
         for row in reader:
             # Skip empty rows
             if not row:
                 continue
-            section_name = row[0].strip().lower()
+            # Section markers occupy their own row. Object names may also be
+            # words such as "Walls" or "Sensors".
+            section_name = row[0].strip().lower() if all(not cell.strip() for cell in row[1:]) else None
             if section_name == "positions":
                 current_section = "Positions"
                 continue
@@ -116,10 +127,10 @@ def read_coordinates_from_file(file_path):
                      max_consumption, current_consumption, consumption_direction) = row
                     x_d = int(x_d)
                     y_d = int(y_d)
-                    power = int(float(power))
+                    power = float(power)
                     state_d = int(float(state_d))
-                    min_consumption = int(float(min_consumption))
-                    max_consumption = int(float(max_consumption))
+                    min_consumption = float(min_consumption)
+                    max_consumption = float(max_consumption)
                     current_consumption = int(float(current_consumption))
                     try:
                         consumption_direction = int(float(consumption_direction))
@@ -175,27 +186,16 @@ def read_coordinates_from_file(file_path):
 
 def draw_points(coordinates, canvas):
     for point in coordinates:
-        name, x, y = point.name, point.x, point.y
+        x, y = point.x, point.y
         canvas_x, canvas_y = to_canvas(canvas, x, y)
         radius = to_canvas_length(canvas, 5)
-        marker_id = canvas.create_oval(
+        canvas.create_oval(
             canvas_x - radius,
             canvas_y - radius,
             canvas_x + radius,
             canvas_y + radius,
             fill="blue",
             tags='point',
-        )
-        create_map_label(
-            canvas,
-            x,
-            y,
-            text=name,
-            fill="#506080",
-            tags=('point',),
-            kind="point",
-            font=("Helvetica", 8),
-            hover_target=marker_id,
         )
 
 read_walls_coordinates: list[Wall] = []

@@ -532,6 +532,18 @@ def _align_by_best_lag(a: np.ndarray, b: np.ndarray, max_lag: int = 35) -> tuple
     return best_pair
 
 
+def _cycle_power_values(data) -> np.ndarray:
+    """Read finite cycle samples in timestamp order when timestamps exist."""
+    df = pd.DataFrame(data or [])
+    if df.empty or "value" not in df.columns:
+        return np.array([], dtype=float)
+    if "time" in df.columns:
+        df["time"] = pd.to_datetime(df["time"], format="mixed", errors="coerce")
+        df = df.dropna(subset=["time"]).sort_values("time", kind="stable")
+    values = pd.to_numeric(df["value"], errors="coerce").to_numpy(dtype=float)
+    return values[np.isfinite(values)]
+
+
 def _load_representative_cycle_values(info: dict) -> np.ndarray:
     try:
         cycle_id = int(float(info.get("runtime_cycle_id", info.get("selected_cycle_id"))))
@@ -562,12 +574,7 @@ def _load_representative_cycle_values(info: dict) -> np.ndarray:
     if not selected:
         return np.array([], dtype=float)
 
-    df = pd.DataFrame(selected.get("data") or [])
-    if df.empty or "value" not in df.columns:
-        return np.array([], dtype=float)
-
-    vals = pd.to_numeric(df["value"], errors="coerce").dropna().to_numpy(dtype=float)
-    return vals
+    return _cycle_power_values(selected.get("data"))
 
 
 def _load_cluster_mean_values(info: dict) -> np.ndarray:
@@ -623,10 +630,7 @@ def _load_cluster_mean_values(info: dict) -> np.ndarray:
         c = by_id.get(int(cid))
         if not c:
             continue
-        df = pd.DataFrame(c.get("data") or [])
-        if df.empty or "value" not in df.columns:
-            continue
-        vals = pd.to_numeric(df["value"], errors="coerce").dropna().to_numpy(dtype=float)
+        vals = _cycle_power_values(c.get("data"))
         if vals.size < 10:
             continue
         seg = _extract_activity_segment(vals, min_len=8)
@@ -653,6 +657,7 @@ def _compute_shape_similarity(df_sim: pd.DataFrame, info: dict) -> dict:
         return out
 
     sim_series = pd.to_numeric(df_sim["value"], errors="coerce").dropna()
+    sim_series = sim_series[np.isfinite(sim_series)]
     if sim_series.empty:
         return out
     sim_vals = sim_series.to_numpy(dtype=float)
@@ -828,16 +833,16 @@ def _align_len(lst, target_len, fill=None):
 
 def _build_dataframe(time_list_str, values_list):
     time_list = [_parse_datetime(t) for t in time_list_str]
-    vals = pd.to_numeric(pd.Series(values_list), errors="coerce")
+    vals = pd.to_numeric(pd.Series(values_list), errors="coerce").replace([np.inf, -np.inf], np.nan)
     df = pd.DataFrame({"timestamp": time_list, "value": vals})
     df = df.dropna(subset=["value"])
     if df.empty:
         return df
-    df.sort_values("timestamp", inplace=True)
+    df.sort_values("timestamp", kind="mergesort", inplace=True)
     df = df.drop_duplicates(subset="timestamp", keep="last")
     df.set_index("timestamp", inplace=True)
     # resample per minute and ffill for clean lines
-    df = df.resample("1min").ffill()
+    df = df.resample("1min").last().ffill()
     return df
 
 def _sensor_type(name: str, sensor_states: dict):

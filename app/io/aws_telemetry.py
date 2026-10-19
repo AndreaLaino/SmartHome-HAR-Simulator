@@ -37,6 +37,29 @@ def _sanitize_name(name: str) -> str:
     return "".join(ch if ch.isalnum() or ch in "-_." else "-" for ch in (name or "").strip())
 
 
+def _first_present(data: Dict[str, Any], *keys: str):
+    for key in keys:
+        if key in data and data[key] is not None:
+            return data[key]
+    return None
+
+
+def _csv_timestamp(value) -> str:
+    """Keep ISO input and convert Unix seconds/milliseconds for CSV readers."""
+    if value is None or value == "":
+        return ""
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return str(value)
+    if numeric > 10000000000:
+        numeric /= 1000
+    try:
+        return datetime.fromtimestamp(numeric).strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+    except (OSError, OverflowError, ValueError):
+        return ""
+
+
 class AWSTelemetryImporter:
     """Import telemetry data (DHT22, Smart Meter) from AWS S3."""
     
@@ -73,8 +96,11 @@ class AWSTelemetryImporter:
     def list_objects(self, bucket: str, prefix: str = '') -> List[Dict[str, Any]]:
         """List objects with metadata (Key, Size, LastModified)."""
         try:
-            response = self.s3_client.list_objects_v2(Bucket=bucket, Prefix=prefix)
-            return response.get('Contents', [])
+            paginator = self.s3_client.get_paginator('list_objects_v2')
+            objects = []
+            for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
+                objects.extend(page.get('Contents', []))
+            return objects
         except Exception as e:
             logger.error(f"Error listing objects: {e}")
             return []
@@ -97,6 +123,8 @@ class AWSTelemetryImporter:
                 continue
             try:
                 data = json.loads(line)
+                if not isinstance(data, dict):
+                    continue
                 # Check for SmartMeter fields (check first for priority)
                 if 'apower' in data or 'power_w' in data or 'power' in data:
                     logger.info(f"Detected SmartMeter data: {list(data.keys())}")
@@ -131,8 +159,10 @@ class AWSTelemetryImporter:
                 continue
             try:
                 data = json.loads(line)
+                if not isinstance(data, dict):
+                    continue
                 records.append({
-                    'timestamp': data.get('timestamp_iso'),
+                    'timestamp': _first_present(data, 'timestamp_iso', 'ts'),
                     'label': data.get('label'),
                     'gpio': data.get('gpio'),
                     'temperature': data.get('temperature_c'),
@@ -153,12 +183,14 @@ class AWSTelemetryImporter:
                 continue
             try:
                 data = json.loads(line)
+                if not isinstance(data, dict):
+                    continue
                 records.append({
-                    'timestamp': data.get('ts'),
-                    'power': data.get('apower'),
-                    'voltage': data.get('voltage'),
-                    'current': data.get('current'),
-                    'energy': data.get('energy_total')
+                    'timestamp': _first_present(data, 'ts', 'timestamp_iso'),
+                    'power': _first_present(data, 'apower', 'power', 'power_w'),
+                    'voltage': _first_present(data, 'voltage', 'voltage_v'),
+                    'current': _first_present(data, 'current', 'current_a'),
+                    'energy': _first_present(data, 'energy_total', 'energy')
                 })
             except json.JSONDecodeError as e:
                 logger.warning(f"Invalid JSON line: {line[:50]}... - {e}")
@@ -172,7 +204,7 @@ class AWSTelemetryImporter:
                 writer.writerow(['timestamp_iso', 'label', 'gpio', 'temp_C', 'hum_%'])
                 for r in records:
                     writer.writerow([
-                        r.get('timestamp', ''),
+                        _csv_timestamp(r.get('timestamp', '')),
                         r.get('label', ''),
                         r.get('gpio', ''),
                         r.get('temperature', ''),
@@ -192,7 +224,7 @@ class AWSTelemetryImporter:
                 writer.writerow(['timestamp_iso', 'device', 'device_id', 'ip', 'power_W', 'voltage_V', 'current_A'])
                 for r in records:
                     writer.writerow([
-                        r.get('timestamp', ''),
+                        _csv_timestamp(r.get('timestamp', '')),
                         device_name,
                         device_name,
                         'imported',

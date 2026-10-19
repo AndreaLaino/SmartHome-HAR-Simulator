@@ -1,7 +1,7 @@
 # smartmeter.py
 from __future__ import annotations
 
-import os, csv, time, threading, logging, requests, glob
+import os, csv, time, threading, logging, requests, glob, math
 from typing import Optional, Dict, List, Tuple
 from datetime import datetime
 import pandas as pd
@@ -39,7 +39,7 @@ def csv_path_for_device(device_name: str) -> str:
 
 def csv_ensure_header(path: str):
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-    if not os.path.isfile(path):
+    if not os.path.isfile(path) or os.path.getsize(path) == 0:
         with open(path, "w", newline="", encoding="utf-8") as f:
             csv.writer(f).writerow(
                 ["timestamp_iso", "device", "device_id", "ip", "power_W", "voltage_V", "current_A"]
@@ -80,11 +80,22 @@ def derive_device_id(device_name: str, rules: Optional[List[Tuple[str, str]]] = 
             return dev_id
     return default
 
+
+def _first_not_none(*values):
+    for value in values:
+        if value is not None:
+            return value
+    return None
+
 def _get_voltage_gen2(shelly_ip: str, timeout=2, auth: Optional[tuple]=None):
     url = f"http://{shelly_ip}/rpc/Switch.GetStatus?id=0"
     r = requests.get(url, timeout=timeout, auth=auth)
     d = r.json()
-    return d.get("voltage"), d.get("apower") or d.get("power"), d.get("current")
+    return (
+        d.get("voltage"),
+        _first_not_none(d.get("apower"), d.get("power")),
+        d.get("current"),
+    )
 
 def _get_voltage_gen1(shelly_ip: str, timeout=2, auth: Optional[tuple]=None):
     url = f"http://{shelly_ip}/status"
@@ -95,11 +106,11 @@ def _get_voltage_gen1(shelly_ip: str, timeout=2, auth: Optional[tuple]=None):
     if meters and isinstance(meters, list):
         m0 = meters[0]
         v = m0.get("voltage")
-        p = m0.get("power") or m0.get("apower")
+        p = _first_not_none(m0.get("power"), m0.get("apower"))
         a = m0.get("current")
-    v = v or data.get("voltage")
-    p = p or data.get("power")
-    a = a or data.get("current")
+    v = _first_not_none(v, data.get("voltage"))
+    p = _first_not_none(p, data.get("power"))
+    a = _first_not_none(a, data.get("current"))
     return v, p, a
 
 #logger for a single device
@@ -259,21 +270,28 @@ def load_csv(csv_path: str, device: Optional[str] = None) -> dict:
             }
     return out
 
+def _power_df_from_rows(rows: list[dict], rule: str = "1min", agg: str = "max") -> pd.DataFrame:
+    if not rows:
+        return pd.DataFrame()
+    df = pd.DataFrame(rows)
+    df["timestamp"] = pd.to_datetime(df["timestamp"], format="mixed", errors="coerce")
+    df["value"] = pd.to_numeric(df["value"], errors="coerce")
+    df = df.dropna(subset=["timestamp", "value"])
+    df = df[df["value"].map(math.isfinite)]
+    if df.empty:
+        return pd.DataFrame()
+    df = df.sort_values("timestamp").set_index("timestamp")
+    return df.resample(rule).agg(agg).fillna(0)
+
+
 def load_power_df(csv_path: str, device: Optional[str] = None, rule: str = "1min", agg: str = "median") -> pd.DataFrame:
     raw = load_csv(csv_path, device=device)
     rows = []
     for ts, d in raw.items():
         p = d.get("power")
-        if p is not None and p > 0:
+        if p is not None and p >= 0:
             rows.append({"timestamp": ts, "value": p})
-    if not rows:
-        return pd.DataFrame()
-    df = pd.DataFrame(rows)
-    df["timestamp"] = pd.to_datetime(df["timestamp"], format="%Y-%m-%d %H:%M:%S.%f", errors="coerce")
-    df = df.dropna(subset=["timestamp"]).sort_values("timestamp").set_index("timestamp")
-    # Use max to keep highest power value per minute
-    result = df.resample(rule).max()
-    return result.fillna(0)
+    return _power_df_from_rows(rows, rule=rule, agg=agg)
 
 def load_power_by_device_id_any_csv(device_id_wanted: str, logs_dir=DEVICES_DIR) -> pd.DataFrame:
     want = _canon_id(device_id_wanted)
@@ -290,12 +308,7 @@ def load_power_by_device_id_any_csv(device_id_wanted: str, logs_dir=DEVICES_DIR)
                 except Exception:
                     p = 0.0
                 rows.append({"timestamp": ts, "value": p})
-    if not rows:
-        return pd.DataFrame()
-    df = pd.DataFrame(rows)
-    df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
-    df = df.dropna(subset=["timestamp"]).sort_values("timestamp").set_index("timestamp")
-    return df.resample("1min").max().fillna(0)
+    return _power_df_from_rows(rows)
 
 def load_power_by_ip_any_csv(ip_wanted: str, logs_dir=DEVICES_DIR) -> pd.DataFrame:
     rows = []
@@ -315,9 +328,4 @@ def load_power_by_ip_any_csv(ip_wanted: str, logs_dir=DEVICES_DIR) -> pd.DataFra
                     rows.append({"timestamp": ts, "value": p})
         except Exception:
             continue
-    if not rows:
-        return pd.DataFrame()
-    df = pd.DataFrame(rows)
-    df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
-    df = df.dropna(subset=["timestamp"]).sort_values("timestamp").set_index("timestamp")
-    return df.resample("1min").max().fillna(0)
+    return _power_df_from_rows(rows)

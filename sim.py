@@ -1,6 +1,6 @@
 #sim.py
 from PIL import Image, ImageTk
-from datetime import datetime, timedelta
+from datetime import datetime
 from door import interaction_with_door, draw_all_doors
 from sensor import (
     TemperatureSensorAdapter,
@@ -84,6 +84,9 @@ def _sim_state(house_state: HouseState) -> dict:
     state.setdefault("avatar_id", None)
     state.setdefault("avatar_position", None)
     state.setdefault("active_pir_sensors", [])
+    state.setdefault("sensor_update_job", None)
+    state.setdefault("sensor_update_canvas", None)
+    state.setdefault("sensor_update_token", None)
     return state
 
 
@@ -236,6 +239,12 @@ def _render_device_states(canvas, d_devices):
         return
     for device in d_devices:
         canvas.itemconfig(device.name, fill="red" if int(device.state) == 0 else "green")
+
+
+def render_simulation_state(canvas, runtime_sources):
+    """Refresh model colors without advancing or sampling the simulation."""
+    _render_device_states(canvas, runtime_sources["devices"])
+    _render_sensor_states(canvas, runtime_sources["sensors"])
 
 
 def _render_interaction_scene(canvas, d_devices, s_sensors, d_doors):
@@ -553,7 +562,6 @@ def start_simulation(canvas, timer_app_instance, activity_label, house_state: Ho
     if not timer_app_instance.is_running:
         print("Simulation started.")
         timer_app_instance.start_stop()
-        timer_app_instance.elapsed_time = timedelta()
     else:
         print("Simulation already running.")
         update_sensors(canvas, timer_app_instance, activity_label, house_state, runtime_sources)
@@ -562,7 +570,6 @@ def stop_simulation(timer_app_instance):
     if timer_app_instance.is_running:
         print("Simulation stopped.")
         timer_app_instance.start_stop()
-        timer_app_instance.elapsed_time = timedelta()
     else:
         print("Simulation already stopped.")
 
@@ -638,6 +645,9 @@ def toggle_device_state(canvas, event, house_state, timer_app_instance, runtime_
             else:
                 if type_d != "Fridge" and dev_name in cycles_store:
                     del cycles_store[dev_name]
+                if type_d != "Fridge":
+                    current_cons = 0.0
+                    cons_dir = 0
                 # Do not change current_cons for Fridge: continue the descent
 
             # Update device
@@ -655,6 +665,17 @@ def toggle_device_state(canvas, event, house_state, timer_app_instance, runtime_
 def update_sensors(canvas, timer_app_instance, activity_label, house_state: HouseState, runtime_sources: dict, *, schedule_next=True, force=False, delta_override=None, fast=False):
     """update sensors based on elapsed time and log events"""
     state = _sim_state(house_state)
+
+    if schedule_next:
+        # Starting or resuming may happen before the previous poll has fired.
+        # Replace that poll so one session always has a single update chain.
+        previous_job = state["sensor_update_job"]
+        previous_canvas = state["sensor_update_canvas"]
+        state["sensor_update_job"] = None
+        state["sensor_update_canvas"] = None
+        state["sensor_update_token"] = None
+        if previous_job is not None and previous_canvas is not None:
+            previous_canvas.after_cancel(previous_job)
 
     if (not timer_app_instance.is_running) and (not force):
         print("Error: Simulation not started.")
@@ -723,14 +744,25 @@ def update_sensors(canvas, timer_app_instance, activity_label, house_state: Hous
 
     _snapshot_device_smartmeters(house_state, s_sensors, d_devices, state_store, timestamp, updated_smartmeters)
     _sample_binary_sensors(house_state, s_sensors, state_store, timestamp, fast)
-    _render_device_states(canvas, d_devices)
-    _render_sensor_states(canvas, s_sensors)
+    _render_device_states(ui_canvas, d_devices)
+    _render_sensor_states(ui_canvas, s_sensors)
 
     # normal scheduling
     if schedule_next and timer_app_instance.is_running and canvas is not None:
-        canvas.after(
-            1000,
-            lambda: update_sensors(canvas, timer_app_instance, activity_label, house_state, runtime_sources),
-        )
+        token = object()
+        state["sensor_update_token"] = token
+
+        def poll_sensors():
+            # A cancelled callback can already be queued by Tk. A reset also
+            # replaces the state store, invalidating callbacks from that run.
+            if house_state.sim_state() is not state or state["sensor_update_token"] is not token:
+                return
+            state["sensor_update_job"] = None
+            state["sensor_update_canvas"] = None
+            state["sensor_update_token"] = None
+            update_sensors(canvas, timer_app_instance, activity_label, house_state, runtime_sources)
+
+        state["sensor_update_canvas"] = canvas
+        state["sensor_update_job"] = canvas.after(1000, poll_sensors)
 
         

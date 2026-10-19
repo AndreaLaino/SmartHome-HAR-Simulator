@@ -130,7 +130,7 @@ class AWSS3Importer:
     def save_to_local_csv(self, content: str, local_path: str) -> bool:
         """Save downloaded content to local CSV file."""
         try:
-            with open(local_path, 'w', encoding='utf-8') as f:
+            with open(local_path, 'w', encoding='utf-8', newline='') as f:
                 f.write(content)
             logger.info(f"Saved content to '{local_path}'")
             return True

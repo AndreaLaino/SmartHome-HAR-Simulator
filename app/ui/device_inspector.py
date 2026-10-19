@@ -414,8 +414,8 @@ def _show_details(ctx, selection: MapSelection) -> None:
         )
     elif selection.kind == "point":
         messagebox.showinfo(
-            f"Point: {value.name}",
-            f"Name: {value.name}\nPosition: ({value.x}, {value.y})",
+            "Point",
+            f"Position: ({value.x}, {value.y})",
         )
     elif selection.kind == "door":
         messagebox.showinfo(
@@ -534,8 +534,9 @@ def _unique_name(source: list, base_name: str) -> str:
     return candidate
 
 
-def _ensure_reference_point(ctx, x: int, y: int):
+def _ensure_reference_point(ctx, x: int, y: int, *, draw: bool = False):
     from models import Point
+    from point import draw_point, next_point_name
 
     source = current_points(ctx)
     existing = next(
@@ -544,8 +545,10 @@ def _ensure_reference_point(ctx, x: int, y: int):
     )
     if existing is not None:
         return existing
-    point = Point(_unique_name(source, "point"), x, y)
+    point = Point(next_point_name(source), x, y)
     source.append(point)
+    if draw:
+        draw_point(ctx.canvas, point)
     return point
 
 
@@ -1045,7 +1048,11 @@ def delete_map_selection(
     if selection is None or selection.value is None:
         return False
     value = selection.value
-    display_name = getattr(value, "name", selection.kind)
+    display_name = (
+        selection.kind
+        if selection.kind == "point"
+        else getattr(value, "name", selection.kind)
+    )
     connected_walls = []
     connected_doors = []
     if selection.kind == "point":
@@ -1060,7 +1067,10 @@ def delete_map_selection(
             if (value.x, value.y) in {(door.x1, door.y1), (door.x2, door.y2)}
         ]
 
-    prompt = f"Delete {selection.kind} '{display_name}'?"
+    if selection.kind == "point":
+        prompt = "Delete point?"
+    else:
+        prompt = f"Delete {selection.kind} '{display_name}'?"
     if connected_walls or connected_doors:
         prompt += (
             f"\n\nThis will also remove {len(connected_walls)} connected wall(s)"
@@ -1144,10 +1154,18 @@ def delete_selected_device(ctx, _event=None):
 
 def _show_selection_actions(ctx, selection: MapSelection, event) -> None:
     value = selection.value
-    name = getattr(value, "name", selection.kind.title())
+    name = (
+        selection.kind.title()
+        if selection.kind == "point"
+        else getattr(value, "name", selection.kind.title())
+    )
     menu = tk.Menu(ctx.canvas, tearoff=0)
     menu.add_command(
-        label=f"{selection.kind.title()}: {name}",
+        label=(
+            "Point"
+            if selection.kind == "point"
+            else f"{selection.kind.title()}: {name}"
+        ),
         state="disabled",
     )
     menu.add_separator()
@@ -1338,17 +1356,19 @@ def begin_placement_mode(ctx, label: str, callback) -> None:
     set_canvas_mode(ctx, "placement", f"Mode: {label} — click the grid")
 
 
-def _point_at_event(ctx, event):
-    """Return the point close enough to be intentionally clicked."""
+def _point_at_event(ctx, event, *, create: bool = False):
+    """Reuse a nearby point, optionally creating one at the clicked position."""
     points = current_points(ctx)
-    if not points:
-        return None
     x, y = event_to_logical(ctx.canvas, event)
-    point = _nearest_marker(points, x, y)
-    tolerance = max(8.0, 12.0 / max(get_zoom(ctx.canvas), 0.01))
-    if math.hypot(point.x - x, point.y - y) > tolerance:
+    if points:
+        point = _nearest_marker(points, x, y)
+        tolerance = max(8.0, 12.0 / max(get_zoom(ctx.canvas), 0.01))
+        if math.hypot(point.x - x, point.y - y) <= tolerance:
+            return point
+    if not create:
         return None
-    return point
+    x, y = snap_logical_position(ctx.canvas, x, y)
+    return _ensure_reference_point(ctx, x, y, draw=True)
 
 
 def begin_point_segment_mode(
@@ -1359,7 +1379,7 @@ def begin_point_segment_mode(
     *,
     continuous: bool = False,
 ) -> None:
-    """Pick two existing points and preview a wall/door between them."""
+    """Pick two endpoints, creating reference points where necessary."""
     from app.controllers.simulation import enable_all_menus
 
     _cancel_placement_if_needed(ctx)
@@ -1437,7 +1457,7 @@ def begin_point_segment_mode(
         set_canvas_mode(
             ctx,
             "placement",
-            f"Mode: {label} - click the first point",
+            f"Mode: {label} - click the first endpoint",
         )
         return "break"
 
@@ -1454,28 +1474,21 @@ def begin_point_segment_mode(
         return None
 
     def click(event):
-        point = _point_at_event(ctx, event)
-        if point is None:
-            set_canvas_mode(
-                ctx,
-                "placement",
-                f"Mode: {label} - click an existing point",
-            )
-            return "break"
+        point = _point_at_event(ctx, event, create=True)
         if state["first"] is None:
             state["first"] = point
             draw_preview(point.x, point.y)
             set_canvas_mode(
                 ctx,
                 "placement",
-                f"Mode: {label} - click the second point",
+                f"Mode: {label} - click the second endpoint",
             )
             return "break"
         if point is state["first"]:
             set_canvas_mode(
                 ctx,
                 "placement",
-                f"Mode: {label} - choose a different point",
+                f"Mode: {label} - choose a different endpoint",
             )
             return "break"
         created = callback(state["first"], point)
@@ -1488,7 +1501,7 @@ def begin_point_segment_mode(
         set_canvas_mode(
             ctx,
             "placement",
-            f"Mode: {label} - segment already exists; choose two points",
+            f"Mode: {label} - segment already exists; choose two endpoints",
         )
         return "break"
 
@@ -1500,7 +1513,7 @@ def begin_point_segment_mode(
     set_canvas_cursor(canvas, "crosshair")
     if getattr(ctx, "scenario_menu", None) is not None:
         ctx.scenario_menu.entryconfig(label, state="disabled")
-    set_canvas_mode(ctx, "placement", f"Mode: {label} - click the first point")
+    set_canvas_mode(ctx, "placement", f"Mode: {label} - click the first endpoint")
     ctx._cancel_canvas_action = lambda: finish(False)
 
 

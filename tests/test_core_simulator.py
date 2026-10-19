@@ -3,6 +3,7 @@ import tempfile
 import unittest
 from datetime import datetime
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 import pandas as pd
 
@@ -26,6 +27,7 @@ from app.controllers.simulation import (
 )
 from device import add_device
 from point import add_point
+from app.ui import main_ui
 
 
 def make_sensor(name, sensor_type, state=0):
@@ -240,6 +242,61 @@ class TimerLifecycleTests(unittest.TestCase):
 
 
 class ManualModeMenuTests(unittest.TestCase):
+    def test_object_placement_tools_remain_active_after_creation(self):
+        mode_changes = []
+        ctx = SimpleNamespace(
+            canvas=object(),
+            load_active=False,
+            timer_app_instance=object(),
+            _restore_manual_canvas_binding=lambda: mode_changes.append("manual"),
+            _activate_canvas_select=lambda: mode_changes.append("select"),
+        )
+        cases = (
+            (main_ui._menu_add_point, "Add points", "add_point"),
+            (main_ui._menu_add_device, "Add devices", "add_device"),
+            (main_ui._menu_add_sensor, "Add sensors", "add_sensor"),
+        )
+
+        for handler, label, add_name in cases:
+            with self.subTest(label=label):
+                placement = {}
+
+                def begin(_ctx, selected_label, callback):
+                    placement["label"] = selected_label
+                    placement["callback"] = callback
+
+                def create(*_args, **kwargs):
+                    finished = kwargs.get("on_finished")
+                    if callable(finished):
+                        finished(True)
+                    return True
+
+                with (
+                    patch.object(main_ui, "begin_placement_mode", side_effect=begin),
+                    patch.object(main_ui, add_name, side_effect=create),
+                ):
+                    handler(ctx)
+                    placement["callback"](object())
+
+                self.assertEqual(placement["label"], label)
+                self.assertEqual(mode_changes, [])
+
+    def test_wall_and_door_tools_are_continuous(self):
+        ctx = SimpleNamespace(canvas=object(), load_active=False)
+
+        for handler, label in (
+            (main_ui._menu_add_wall, "Add walls"),
+            (main_ui._menu_add_door, "Add doors"),
+        ):
+            with self.subTest(label=label), patch.object(
+                main_ui,
+                "begin_point_segment_mode",
+            ) as begin:
+                handler(ctx)
+
+            self.assertEqual(begin.call_args.args[1], label)
+            self.assertTrue(begin.call_args.kwargs["continuous"])
+
     def test_manual_tool_does_not_start_a_paused_timer(self):
         calls = []
 
@@ -353,24 +410,35 @@ class ManualModeMenuTests(unittest.TestCase):
         self.assertFalse(created)
         self.assertEqual(finished, [False])
 
-    def test_cancelled_point_dialog_finishes_temporary_placement(self):
+    def test_point_is_created_without_a_name_dialog(self):
         class Canvas:
-            pass
+            def __init__(self):
+                self.markers = []
+
+            def create_oval(self, *coordinates, **options):
+                self.markers.append((coordinates, options))
+                return len(self.markers)
 
         finished = []
+        canvas = Canvas()
         with (
             patch("point.event_to_logical", return_value=(10, 20)),
-            patch("point.simpledialog.askstring", return_value=None),
+            patch("point.points", []) as created_points,
+            patch("point.coordinates", []),
         ):
             created = add_point(
-                Canvas(),
+                canvas,
                 object(),
                 False,
                 on_finished=finished.append,
             )
 
-        self.assertFalse(created)
-        self.assertEqual(finished, [False])
+        self.assertTrue(created)
+        self.assertEqual(finished, [True])
+        self.assertEqual(len(created_points), 1)
+        self.assertEqual((created_points[0].x, created_points[0].y), (10, 20))
+        self.assertEqual(created_points[0].name, "point_1")
+        self.assertEqual(len(canvas.markers), 1)
 
 
 class ConsumptionAndPredictionTests(unittest.TestCase):

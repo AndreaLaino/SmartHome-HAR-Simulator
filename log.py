@@ -391,6 +391,8 @@ def show_log(
 
 def start_interaction_log_session(house_state, session_label: str = ""):
     state = _interaction_log_state(house_state)
+    if state["interaction_file"] is not None:
+        stop_interaction_log_session(house_state)
     suffix = "manual"
     if session_label:
         safe = str(session_label).replace(":", "").replace("/", "-").replace("\\", "-").strip()

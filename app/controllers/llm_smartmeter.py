@@ -385,11 +385,12 @@ def _load_time_value_csv(path: Path) -> pd.DataFrame:
 
     out = pd.DataFrame(
         {
-            "time": pd.to_datetime(df[time_col], errors="coerce"),
+            "time": pd.to_datetime(df[time_col], errors="coerce", format="mixed"),
             "value": pd.to_numeric(df[value_col], errors="coerce"),
         }
     )
     out = out.dropna(subset=["time", "value"]).sort_values("time").reset_index(drop=True)
+    out = out[np.isfinite(out["value"])].reset_index(drop=True)
 
     if out.empty:
         raise ValueError("CSV has no valid rows after time/value parsing.")

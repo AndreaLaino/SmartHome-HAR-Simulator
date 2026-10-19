@@ -92,16 +92,18 @@ def select_folder(ctx: AppContext):
 
 def read_timestamp_state_file(file_path: str):
     df = pd.read_csv(file_path, sep=None, engine='python', header=0)
+    if "state" not in df.columns and "value" in df.columns:
+        df = df.rename(columns={"value": "state"})
     required_cols = {"time", "state"}
     if not required_cols.issubset(df.columns):
         raise ValueError(f"Requested rows missing {required_cols}")
 
-    df["time"] = pd.to_datetime(df["time"])
-    df = df.sort_values("time")
+    df["time"] = pd.to_datetime(df["time"], format="mixed")
+    df = df.sort_values("time", kind="mergesort")
     df = df.drop_duplicates(subset=["time"], keep="last")
 
     time_str_list = df["time"].dt.strftime("%Y-%m-%d %H:%M:%S").tolist()
-    state_list = pd.to_numeric(df["state"], errors="coerce").tolist()
+    state_list = pd.to_numeric(df["state"], errors="coerce").replace([float("inf"), float("-inf")], float("nan")).tolist()
     return time_str_list, state_list
 
 def clear_plot_area(ctx: AppContext):
@@ -223,7 +225,7 @@ def select_path_csv(ctx: AppContext):
         return
 
     try:
-        df["timestamp_sim"] = pd.to_datetime(df["timestamp_sim"])
+        df["timestamp_sim"] = pd.to_datetime(df["timestamp_sim"], format="mixed")
     except Exception as e:
         messagebox.showerror("Error", f"timestamp_sim conversion error:\n{e}")
         return
@@ -245,6 +247,25 @@ def select_path_csv(ctx: AppContext):
 
 # Build series per sensor; stable sort; aggregate by minute:
 # Smart Meter -> MAX; others -> last event per minute.
+def _interaction_samples(state, subject, name):
+    frame = state["interactions_df"]
+    samples = frame[
+        (frame["event_type"] == "sensor")
+        & (frame["subject"] == subject)
+        & (frame["name"] == name)
+    ][["timestamp_sim", "value"]].copy()
+    samples["timestamp_sim"] = pd.to_datetime(samples["timestamp_sim"], errors="coerce", format="mixed")
+    samples["value"] = pd.to_numeric(samples["value"], errors="coerce").replace(
+        [float("inf"), float("-inf")], float("nan")
+    )
+    samples = samples.dropna(subset=["timestamp_sim", "value"])
+    samples = samples.sort_values("timestamp_sim", kind="mergesort")
+    samples["timestamp_sim"] = samples["timestamp_sim"].dt.floor("min")
+    if subject == "Smart Meter":
+        return samples.groupby("timestamp_sim", as_index=False, sort=True)["value"].max()
+    return samples.drop_duplicates(subset="timestamp_sim", keep="last")
+
+
 def build_sensor_states_from_interactions(ctx: AppContext, selected_indices):
     state = _auto_state(ctx)
     sensor_states = {}
@@ -253,27 +274,7 @@ def build_sensor_states_from_interactions(ctx: AppContext, selected_indices):
     for idx in selected_indices:
         subj, name = state["sensors_in_csv"][idx]
 
-        sub = state["interactions_df"][
-            (state["interactions_df"]["event_type"] == "sensor")
-            & (state["interactions_df"]["subject"] == subj)
-            & (state["interactions_df"]["name"] == name)
-        ][["timestamp_sim", "value"]].copy()
-
-        if sub.empty:
-            continue
-        sub["timestamp_sim"] = pd.to_datetime(sub["timestamp_sim"], errors="coerce")
-        sub = sub.dropna(subset=["timestamp_sim"])
-        sub = sub.sort_values("timestamp_sim", kind="mergesort")  # mergesort = stable
-
-        sub["value"] = pd.to_numeric(sub["value"], errors="coerce")
-        sub = sub.dropna(subset=["value"])
-
-        if subj == "Smart Meter":
-            # if there are multiple events in the same minute take the maximum (more representative of minute consumption)
-            sub = sub.groupby("timestamp_sim", as_index=False, sort=True)["value"].max()
-        else:
-            # For other sensors keep the last recorded event in that minute
-            sub = sub[~sub["timestamp_sim"].duplicated(keep="last")]
+        sub = _interaction_samples(state, subj, name)
 
         if sub.empty:
             continue
@@ -340,27 +341,12 @@ def export_logs_from_csv_ctx(ctx: AppContext):
 
     for idx in selected_indices:
         subj, name = state["sensors_in_csv"][idx]
-        sub = state["interactions_df"][
-            (state["interactions_df"]["event_type"] == "sensor")
-            & (state["interactions_df"]["subject"] == subj)
-            & (state["interactions_df"]["name"] == name)
-        ][["timestamp_sim", "value"]].copy()
+        sub = _interaction_samples(state, subj, name)
         if sub.empty:
             skipped += 1
             continue
 
-        sub["timestamp_sim"] = pd.to_datetime(sub["timestamp_sim"], errors="coerce")
-        sub = sub.dropna(subset=["timestamp_sim"]).sort_values("timestamp_sim", kind="mergesort")
-        sub["value"] = pd.to_numeric(sub["value"], errors="coerce")
-        sub = sub.dropna(subset=["value"])
-
-        if subj == "Smart Meter":
-            # consistent with graphs: max for each minute
-            ts = sub.groupby("timestamp_sim", as_index=True, sort=True)["value"].max().to_frame()
-        else:
-            # last event of the minute
-            sub = sub[~sub["timestamp_sim"].duplicated(keep="last")]
-            ts = sub.set_index("timestamp_sim")[["value"]]
+        ts = sub.set_index("timestamp_sim")[["value"]]
 
         if ts.index.nunique() == 1:
             idx0 = ts.index[0]
