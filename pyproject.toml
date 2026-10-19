@@ -53,6 +53,7 @@ py-modules = [
   "house_state",
   "irrigation_controller",
   "label_layout",
+  "lighting",
   "log",
   "main",
   "models",

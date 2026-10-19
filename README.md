@@ -46,6 +46,11 @@ The application opens the scenario editor. Existing scenarios can be loaded
 from the `File` menu, while the `Scenario` menu can be used to create points,
 walls, doors, sensors, and devices from scratch.
 
+On macOS, **Save As** uses the application's file browser. Choose a folder,
+enter the file name, and press **Save**; `.csv` is
+added when no extension is given. Scenario files are replaced only after a complete
+write, so an unsuccessful save preserves an existing file and reports the error.
+
 The main simulation workflows are available from the `Simulation` menu:
 
 - `Manual` for direct interaction with the scenario;
@@ -61,6 +66,43 @@ walls and closed doors to match the simulator's detection behavior, and their
 transparency can be adjusted from the same menu. The window state and canvas
 zoom position are also restored between application launches. Room outlines and
 recognized room types can be shown or hidden with **Settings > Show room types**.
+Room labels also show live power in watts, calculated by summing current Smart
+Meter readings. A meter contributes to the room containing its associated device;
+unlinked meters use their own map position. Each meter counts once, including on
+shared room boundaries. Devices without a Smart Meter are excluded, and rooms
+without meters are marked **No smart meters**. **Scenario > Recognize rooms**
+shows the same live totals in the room list.
+
+To add a light, choose **Scenario > Add devices**, select **Normal Light** or
+**Smart Light**, and enter its wattage (10 W by default). Both draw their configured
+power while on and 0 W while off, and stay on until switched off. Normal lights
+need a separate **Smart Meter** sensor to contribute to room power. Smart lights
+include a built-in Smart Meter automatically, with readings available in room
+totals, device graphs, and logs. This meter follows the light when moved, copied,
+or saved and reloaded; it needs no separate placement. An additional external
+meter on a smart light does not count its power twice. Existing **Lighting**
+devices remain supported as normal lights. These values are instantaneous power
+(W), not accumulated energy (kWh).
+
+Choose **Manual** or **Automatic** in the light's **Light control** field,
+independently of whether it is a normal or smart light. In simulation, manual
+lights start with a clickable **Switch: ON/OFF** square beside them; click the
+switch to activate or deactivate the light. In **Select** mode, drag the switch
+to position it independently. Moving a light leaves its switches in place.
+Double-click a light to open its live information window, including its state,
+power, position, room, metering, associated sensors, and switches. Use **Add switch**
+and **Remove selected switch** there to manage multiple switches for the same
+light. You can also right-click a light to add a switch, or select a switch and
+use Delete/⌘Delete to remove it. Undo restores switch moves, additions, and deletions.
+Switch positions and an explicitly empty switch list survive save/load. Older
+scenarios retain their default switch. Copying a light creates independent copies
+of its switches; a copied switch remains associated with its original light.
+Automatic lights follow room presence: they turn on when the character enters
+their room and off when the character leaves. Before a character is placed,
+active PIR sensors in the room can also activate them. In an open area without
+recognized rooms, nearby presence within the PIR range and clear of walls or
+closed doors is used instead. Right-click an existing light to change its control
+mode. Saved scenarios preserve this choice; older lights default to Manual.
 
 Confirmation dialogs for closing the application, clearing the current home,
 deleting each map-object type, and saving scenarios include a persistent
@@ -73,9 +115,18 @@ dragging moves it, while dragging a wall or door endpoint resizes that segment.
 Right-click opens its action menu, while right-dragging draws a marquee that
 selects multiple objects; left-dragging one of them moves the entire selection.
 Copy, Cut, Paste, and Duplicate are available
-from that menu and through the standard Ctrl+C/X/V/D shortcuts. Ctrl+Z restores
-the previous position after moving or resizing map objects, and also removes or
-restores the most recently added or deleted wall. In Manual mode,
+from that menu and through the standard Ctrl+C/X/V/D shortcuts, or ⌘C/X/V/D on
+macOS. The tool palette includes **Undo** (back arrow), **Redo** (forward arrow),
+and **Delete** (trash) buttons. Ctrl+Z, or **⌘Z on Mac**, restores a move or resize, removes the most
+recently added wall, or restores a deleted point, sensor, device, wall, or door.
+Restoring a point also restores its connected walls and doors; restoring a device
+restores its sensor links. **Redo**, **⌘⇧Z on Mac**, or Ctrl+Shift+Z / Ctrl+Y
+reapplies the most recently undone edit. Multiple Undo/Redo steps are supported;
+a new edit clears the Redo history. Paste and Duplicate can also be undone and
+redone. Use **⌘Delete (⌘Canc)** on a MacBook to delete the
+selected object; plain Delete/Backspace also works on Mac. These shortcuts apply
+when the map has keyboard focus, so text fields retain their normal editing keys.
+In Manual mode,
 left-click moves the character and performs simulation interactions after Start
 is pressed. Selected objects offer type-specific details and actions; press Delete
 to remove one. Sensor

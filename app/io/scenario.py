@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os, csv, shutil, json, glob, io
+import tempfile
 from tkinter import messagebox
 from app.io.safe_dialog import ask_open_file, ask_open_files, ask_save_file, ask_directory
 import tkinter as tk
@@ -20,6 +21,7 @@ from app.confirmations import ask_confirmation
 from app.save_paths import ensure_houses_dir, ensure_saves_dir, ensure_devices_dir
 from app.ui.theme import apply_theme_tree, get_widget_theme_mode
 from models import Point, Sensor, Device, Door, Wall
+from lighting import LIGHT_TYPES, ensure_light_switches
 
 
 def _ask_overwrite_or_append(parent, dest_path: str) -> str:
@@ -359,17 +361,9 @@ def load_scenario_from_path(ctx: AppContext, canvas, filename: str) -> bool:
     return True
 
 
-def _write_scenario(ctx: AppContext, filename: str) -> bool:
-    """Write the current scenario to the given file."""
-    if not ask_confirmation(
-        ctx,
-        "confirm_save_scenario",
-        "Save",
-        f"Do you want to save to:\n{filename}?",
-    ):
-        return False
-
-    with open(filename, "w", newline='', encoding="utf-8") as csvfile:
+def _serialize_scenario(ctx: AppContext) -> str:
+    """Prepare a complete CSV before touching any existing scenario file."""
+    with io.StringIO(newline="") as csvfile:
         csvwriter = csv.writer(csvfile, delimiter=',', quotechar='"', quoting=csv.QUOTE_MINIMAL)
 
         # Points
@@ -402,6 +396,8 @@ def _write_scenario(ctx: AppContext, filename: str) -> bool:
         csvwriter.writerow(["Sensors"])
         src = sensors if not ctx.load_active else ctx.read_sensors
         for s in src:
+            if s.integrated:
+                continue
             (name, x, y, typ, min_val, max_val, step, state,
              direction, consumption, associated_device) = _sensor_to_tuple(s)
             min_val = float(min_val)
@@ -433,8 +429,15 @@ def _write_scenario(ctx: AppContext, filename: str) -> bool:
             csvwriter.writerow([
                 name, int(x), int(y), typ, float(power), int(state),
                 float(min_c), float(max_c), float(curr_c),
-                c_dir if c_dir is not None else "None"
+                c_dir if c_dir is not None else "None",
+                *([d.light_control] if typ in LIGHT_TYPES else []),
             ])
+
+        csvwriter.writerow([])
+        csvwriter.writerow(["Light Switches"])
+        for d in srcd:
+            for switch in ensure_light_switches(d):
+                csvwriter.writerow([d.name, switch.name, int(switch.x), int(switch.y)])
 
         # Doors
         csvwriter.writerow([])
@@ -449,9 +452,48 @@ def _write_scenario(ctx: AppContext, filename: str) -> bool:
         csvwriter.writerow(["Rooms"])
         for room_id, room_type in sorted(ctx.room_overrides.items()):
             csvwriter.writerow([room_id, room_type])
+        return csvfile.getvalue()
+
+
+def _report_save_error(ctx, error):
+    logger.exception("Scenario save failed: %s", error)
+    try:
+        messagebox.showerror("Save failed", f"The scenario could not be saved.\n\n{error}",
+                             parent=getattr(ctx, "window", None))
+    except tk.TclError:
+        logger.warning("The save error dialog could not be displayed")
+
+
+def _write_scenario(ctx: AppContext, filename: str) -> bool:
+    """Replace the destination only after the complete scenario is written."""
+    if not ask_confirmation(ctx, "confirm_save_scenario", "Save", f"Do you want to save to:\n{filename}?"):
+        return False
+    temporary = None
+    try:
+        logger.info("Saving scenario to %s", filename)
+        content = _serialize_scenario(ctx)
+        target = os.path.realpath(os.path.expanduser(os.fspath(filename)))
+        with tempfile.NamedTemporaryFile(mode="w", newline="", encoding="utf-8", delete=False,
+                                         dir=os.path.dirname(target), prefix=f".{os.path.basename(target)}.",
+                                         suffix=".tmp") as csvfile:
+            temporary = csvfile.name
+            csvfile.write(content)
+            csvfile.flush()
+            os.fsync(csvfile.fileno())
+        os.replace(temporary, target)
+        temporary = None
+    except Exception as error:
+        _report_save_error(ctx, error)
+        return False
+    finally:
+        if temporary is not None:
+            try:
+                os.unlink(temporary)
+            except OSError:
+                logger.warning("Could not remove temporary scenario file %s", temporary)
 
     logger.info("Scenario saved successfully to %s.", filename)
-    messagebox.showinfo("Saved", f"Scenario saved successfully to:\n{filename}")
+    messagebox.showinfo("Saved", f"Scenario saved successfully to:\n{filename}", parent=getattr(ctx, "window", None))
     return True
 
 
@@ -472,6 +514,7 @@ def _clear_scenario(ctx: AppContext, canvas) -> None:
     ctx._selected_objects = []
     ctx._map_drag_state = None
     ctx._movement_undo_stack = []
+    ctx._movement_redo_stack = []
 
     from wall import walls_coordinates
     from read import read_walls_coordinates
@@ -1085,14 +1128,15 @@ def export_simulation_csv() -> None:
 
 def save_scenario_as(ctx: AppContext) -> None:
     """Save As... – always ask for a new file path."""
-    houses_dir = ensure_houses_dir()
-    filename = ask_save_file(
-        title="Save scenario as",
-        defaultextension=".csv",
-        initialfile="saved.csv",
-        initialdir=str(houses_dir),
-        filetypes=[("Scenario files", "*.csv"), ("All files", "*.*")],
-    )
+    try:
+        houses_dir = ensure_houses_dir()
+        filename = ask_save_file(
+            title="Save scenario as", defaultextension=".csv", initialfile="saved.csv",
+            initialdir=str(houses_dir), filetypes=[("Scenario files", "*.csv"), ("All files", "*.*")],
+        )
+    except Exception as error:
+        _report_save_error(ctx, error)
+        return
     if not filename:
         return
 

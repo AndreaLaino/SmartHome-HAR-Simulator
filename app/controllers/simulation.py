@@ -8,6 +8,7 @@ from log import start_interaction_log_session, stop_interaction_log_session
 from app.context import AppContext
 from app.logging_setup import setup_logging
 from canvas_zoom import set_canvas_cursor
+from lighting import LIGHT_TYPES
 
 logger = setup_logging("controllers.simulation")
 
@@ -67,7 +68,9 @@ def start_sim(ctx: AppContext):
     from app.ui.rooms import refresh_rooms
     runtime_sources["rooms"] = refresh_rooms(ctx, draw=False)
     s_sensors = runtime_sources["sensors"]
-    if not s_sensors:
+    if not s_sensors and not any(
+        device.type in LIGHT_TYPES for device in runtime_sources.get("devices", [])
+    ):
         messagebox.showwarning("Error", "No sensors found to start the simulation.")
         return
 

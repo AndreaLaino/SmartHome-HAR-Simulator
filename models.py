@@ -26,6 +26,16 @@ class Sensor:
     direction: Optional[int] = None  # for PIR/directional sensors
     consumption: Optional[float] = None  # for Smart Meter
     associated_device: Optional[str] = None  # device linked to this sensor
+    integrated: bool = False  # Runtime meter owned by a smart light
+
+
+@dataclass
+class LightSwitch:
+    """A separately positioned switch belonging to a light."""
+    name: str
+    x: int
+    y: int
+    associated_device: str
 
 
 @dataclass
@@ -34,13 +44,16 @@ class Device:
     name: str
     x: int
     y: int
-    type: str  # "Fridge", "Washing_Machine", "Oven", "Coffee_Machine", "Computer", "Dishwasher"
+    type: str  # Appliance type, "Normal Light", or "Smart Light"; legacy "Lighting" supported
     power: float  # Watt
     state: int  # 0 = OFF, 1 = ON
     min_consumption: float
     max_consumption: float
     current_consumption: float = 0.0
     consumption_direction: int = 1  # 1 = increasing, -1 = decreasing
+    light_control: str = "manual"  # "manual" or "automatic", independent of metering
+    light_switches: Optional[List[LightSwitch]] = None  # None initializes a legacy/default switch
+    _integrated_smartmeter: Optional[Sensor] = field(default=None, init=False, repr=False, compare=False)
 
     def is_on(self) -> bool:
         """Check if device is ON."""
@@ -94,6 +107,8 @@ class Room:
     sensor_names: List[str] = field(default_factory=list)
     device_names: List[str] = field(default_factory=list)
     point_names: List[str] = field(default_factory=list)
+    smartmeter_names: List[str] = field(default_factory=list)
+    total_power_w: float = 0.0
 
     @property
     def room_type(self) -> str:

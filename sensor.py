@@ -19,6 +19,7 @@ import pandas as pd
 from collections import deque
 from typing import Optional
 from models import Sensor, Device
+from lighting import LIGHT_TYPES
 from house_state import HouseState
 from canvas_zoom import event_to_logical, snap_logical_position
 
@@ -2360,6 +2361,9 @@ def compute_smartmeter_consumption(sensor, devices, delta_seconds, current_datet
                 dev_name = associated_dev.name
                 dev_type = associated_dev.type
                 dev_state = associated_dev.state
+
+        if associated_dev is not None and dev_type in LIGHT_TYPES:
+            return float(associated_dev.power) if dev_state == 1 else 0.0
 
         llm_consumption = _get_llm_smartmeter_consumption(
             name,

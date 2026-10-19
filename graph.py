@@ -24,6 +24,7 @@ from sensor import (
     is_smartmeter_bound_to_real_device,
 )
 from consumption_profiles import consumption_profiles
+from lighting import LIGHT_TYPES
 from read import read_sensors, read_devices
 from device import devices
 from app.hardware import real_sensors
@@ -277,9 +278,16 @@ def _profile_for_smartmeter(
 
 
 def _llm_info_for_smartmeter(sensor_name: str, sensor_states: dict) -> dict:
-    profiles = _load_llm_profiles()
     associated_device = _associated_device_name(sensor_name, sensor_states)
     device_type = _device_type_for_name(associated_device)
+    if device_type in LIGHT_TYPES:
+        return {
+            "source": "static",
+            "smartmeter_mode": "static",
+            "device_type": device_type,
+            "associated_device": associated_device,
+        }
+    profiles = _load_llm_profiles()
     appliance_key = _appliance_key_from_device_type(device_type)
     if not appliance_key:
         return {}
@@ -718,7 +726,10 @@ def _compute_shape_similarity(df_sim: pd.DataFrame, info: dict) -> dict:
 def _draw_smartmeter_info_box(ax, info: dict):
     ax.set_axis_off()
     ax.set_facecolor("#f7f7f7")
-    if info:
+    source = str(info.get("source") or "")
+    if source == "static":
+        lines = ["Mode: Static"]
+    elif source.startswith("llm_profile"):
         source_name = str(info.get("source_name") or "").strip()
         if not source_name:
             output_dir = str(info.get("output_dir") or "").strip()
@@ -730,49 +741,47 @@ def _draw_smartmeter_info_box(ax, info: dict):
             f"appliance: {info.get('appliance_key', '?')}",
             f"mode: {info.get('smartmeter_mode', '?')}",
         ]
-        if str(info.get("source") or "").startswith("llm_profile"):
-            used_cases = [
-                item for item in (info.get("used_cases") or [])
-                if item.get("case_type", "normal") == "normal"
-            ]
-            generation_events = [
-                item for item in (info.get("generation_events") or [])
-                if item.get("event_type") in {"completion_match", "dt_prediction"}
-            ]
-            if used_cases and generation_events:
-                lines[2] = "mode: mixed"
-
-            runtime_line = "normal cases: -"
-            if used_cases:
-                runtime_line = "normal cases: " + ", ".join(
-                    f"case_{item.get('cycle_id', '?')}(cluster_{item.get('cluster', '?')})"
-                    for item in used_cases[-8:]
-                )
-
-            completion_line = "completed cases: -"
-            if generation_events:
-                completion_line = (
-                    "completed cases: "
-                    + ", ".join(
-                        f"case_{item.get('cycle_id', '?')}(cluster_{item.get('cluster', '?')})"
-                        for item in generation_events[-8:]
-                    )
-                )
-
-            lines.extend([runtime_line, completion_line])
-        else:
-            lines.extend([
-                f"device type: {info.get('device_type', '?')}",
-                f"profile duration: {info.get('profile_duration_min', '?')} min",
-                f"profile points: {info.get('profile_points', '?')}",
-                f"standby: {info.get('standby_w', '?')} W",
-            ])
-    else:
-        lines = [
-            "Smart Meter metadata not found",
-            "No LLM profile in llm_smartmeter_profiles.json",
-            "No fallback consumption profile for this device",
+        used_cases = [
+            item for item in (info.get("used_cases") or [])
+            if item.get("case_type", "normal") == "normal"
         ]
+        generation_events = [
+            item for item in (info.get("generation_events") or [])
+            if item.get("event_type") in {"completion_match", "dt_prediction"}
+        ]
+        if used_cases and generation_events:
+            lines[2] = "mode: mixed"
+
+        runtime_line = "normal cases: -"
+        if used_cases:
+            runtime_line = "normal cases: " + ", ".join(
+                f"case_{item.get('cycle_id', '?')}(cluster_{item.get('cluster', '?')})"
+                for item in used_cases[-8:]
+            )
+
+        completion_line = "completed cases: -"
+        if generation_events:
+            completion_line = (
+                "completed cases: "
+                + ", ".join(
+                    f"case_{item.get('cycle_id', '?')}(cluster_{item.get('cluster', '?')})"
+                    for item in generation_events[-8:]
+                )
+            )
+
+        lines.extend([runtime_line, completion_line])
+    elif source == "consumption_profile":
+        lines = ["Mode: Predefined profile"]
+        for key, label, unit in (("device_type", "device type", ""),
+                                 ("profile_duration_min", "profile duration", " min"),
+                                 ("profile_points", "profile points", ""),
+                                 ("standby_w", "standby", " W")):
+            value = info.get(key)
+            if value is not None:
+                lines.append(f"{label}: {value}{unit}")
+    else:
+        # Shape-comparison results alone do not identify a consumption mode.
+        lines = ["Mode: Unavailable"]
     ax.text(
         0.03,
         0.97,

@@ -33,6 +33,7 @@ DEFAULTS = {
     "confirm_delete_point": True,
     "confirm_delete_sensor": True,
     "confirm_delete_device": True,
+    "confirm_delete_light_switch": True,
     "confirm_delete_wall": True,
     "confirm_delete_door": True,
     "confirm_save_scenario": True,

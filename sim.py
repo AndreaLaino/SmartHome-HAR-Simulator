@@ -24,6 +24,7 @@ from utils import (
     update_temperature_sensor_color,
 )
 from common import update_sensor_states
+from lighting import LIGHT_TYPES, automatic_light_states, manual_light_at_switch, with_integrated_light_meters
 from log import log_move, log_sensor_event, log_device_event, log_door_event, log_llm_cycle_event
 from house_state import HouseState
 from canvas_zoom import event_to_logical, to_canvas
@@ -217,6 +218,8 @@ def _render_sensor_states(canvas, s_sensors):
 
     for sensor in s_sensors:
         sensor_type = sensor.type
+        if sensor.integrated:
+            continue
         if sensor_type == "Temperature":
             update_temperature_sensor_color(
                 canvas,
@@ -239,12 +242,53 @@ def _render_device_states(canvas, d_devices):
         return
     for device in d_devices:
         canvas.itemconfig(device.name, fill="red" if int(device.state) == 0 else "green")
+        if device.type in LIGHT_TYPES and device.light_control == "manual":
+            canvas.itemconfig(f"light_switch_label:{device.name}", text=f"Switch: {'ON' if device.state else 'OFF'}")
+
+
+def _apply_automatic_light_control(house_state, runtime_sources, timestamp):
+    for light, target_state in automatic_light_states(
+        runtime_sources["devices"], runtime_sources["sensors"], runtime_sources.get("rooms", []),
+        house_state.sim_state().get("avatar_position"),
+        runtime_sources.get("walls", []), runtime_sources.get("doors", []),
+    ):
+        if light.state == target_state:
+            continue
+        light.state = target_state
+        light.current_consumption = float(light.power) if target_state else 0.0
+        light.consumption_direction = 0
+        house_state.active_cycles().pop(light.name, None)
+        log_device_event(house_state, timestamp, light.name, light.type, int(light.x), int(light.y),
+                         target_state, "automatic_room_presence")
+
+
+def _sync_light_meter_readings(house_state, runtime_sources, timestamp, current_datetime):
+    lights = {device.name for device in runtime_sources["devices"] if device.type in LIGHT_TYPES}
+    meters = [sensor for sensor in with_integrated_light_meters(runtime_sources["sensors"], runtime_sources["devices"])
+              if sensor.type == "Smart Meter" and sensor.associated_device in lights]
+    _update_smartmeter_sensors(house_state, meters, house_state.sensor_states(), timestamp,
+                              devices_list=runtime_sources["devices"], delta_seconds=0,
+                              current_datetime=current_datetime)
 
 
 def render_simulation_state(canvas, runtime_sources):
     """Refresh model colors without advancing or sampling the simulation."""
     _render_device_states(canvas, runtime_sources["devices"])
     _render_sensor_states(canvas, runtime_sources["sensors"])
+    _refresh_room_power(canvas, runtime_sources)
+
+
+def _refresh_room_power(canvas, runtime_sources):
+    from room_recognition import update_room_power
+
+    rooms = runtime_sources.get("rooms", [])
+    if not rooms:
+        return
+    update_room_power(rooms, runtime_sources["sensors"], runtime_sources["devices"])
+    if canvas is not None:
+        from app.ui.rooms import render_room_power
+
+        render_room_power(canvas, rooms)
 
 
 def _render_interaction_scene(canvas, d_devices, s_sensors, d_doors):
@@ -445,6 +489,8 @@ def _handle_device_toggle_at_click(canvas, house_state: HouseState, timer_app_in
     d_devices = runtime_sources["devices"]
 
     for device in d_devices:
+        if device.type in LIGHT_TYPES:
+            continue  # Lights use their switch or automatic presence control.
         if abs(device.x - click_x) <= 5 and abs(device.y - click_y) <= 5:
             toggle_device_state(
                 canvas,
@@ -482,8 +528,8 @@ def _prepare_interaction_context(canvas, event, timer_app_instance, house_state:
     timestamp = f"{current_date} {simulated_time}"
     log_move(house_state, timestamp, int(click_x), int(click_y))
 
-    s_sensors = runtime_sources["sensors"]
-    if not s_sensors:
+    s_sensors = with_integrated_light_meters(runtime_sources["sensors"], runtime_sources["devices"])
+    if not s_sensors and not any(device.type in LIGHT_TYPES for device in runtime_sources["devices"]):
         print("No sensors exists.")
         return None
 
@@ -523,7 +569,12 @@ def _run_interaction_flow(canvas, event, timer_app_instance, runtime_sources: di
         click_pos,
     )
 
-    if closest_sensor_pir:
+    switched_light = manual_light_at_switch(d_devices, *click_pos)
+    if switched_light is not None:
+        toggle_device_state(canvas, None, house_state, timer_app_instance, runtime_sources,
+                            x=switched_light.x, y=switched_light.y, render=False,
+                            reason="light_switch", target_device=switched_light)
+    elif closest_sensor_pir:
         _handle_device_toggle_at_click(
             canvas,
             house_state,
@@ -547,7 +598,10 @@ def _run_interaction_flow(canvas, event, timer_app_instance, runtime_sources: di
     _handle_weight_interaction(house_state, s_sensors, state_store, timestamp, click_pos)
     interaction_with_door(canvas, event, d_doors, render=False)
     _handle_switch_interaction(house_state, d_doors, s_sensors, state_store, timestamp)
+    _apply_automatic_light_control(house_state, runtime_sources, timestamp)
+    _sync_light_meter_readings(house_state, runtime_sources, timestamp, interaction_ctx["current_datetime"])
     _render_interaction_scene(canvas, d_devices, s_sensors, d_doors)
+    _refresh_room_power(canvas, runtime_sources)
 
 
 def initialize_avatar_image():
@@ -591,7 +645,7 @@ def interaction(canvas, timer_app_instance, event, activity_label, house_state: 
         return
     _run_interaction_flow(canvas, event, timer_app_instance, runtime_sources, interaction_ctx)
 
-def toggle_device_state(canvas, event, house_state, timer_app_instance, runtime_sources: dict, x=None, y=None, *, render=True):
+def toggle_device_state(canvas, event, house_state, timer_app_instance, runtime_sources: dict, x=None, y=None, *, render=True, reason="user_toggle_at_click", target_device=None):
     """toggle device state on click and log the event"""
     if (x is None or y is None) and event is None:
         raise ValueError("toggle_device_state requires either click coordinates or an event")
@@ -611,13 +665,21 @@ def toggle_device_state(canvas, event, house_state, timer_app_instance, runtime_
     smartmeter_sensors = [s for s in s_sensors if s.type == "Smart Meter"]
 
     for i, device in enumerate(d_devices):
+        if target_device is not None and device is not target_device:
+            continue
         dev_name, dx, dy, type_d, power, dev_state, min_c, max_c = device.name, device.x, device.y, device.type, device.power, device.state, device.min_consumption, device.max_consumption
         current_cons, cons_dir = device.current_consumption, device.consumption_direction
         
         if abs(dx - x) <= 5 and abs(dy - y) <= 5:
+            if type_d in LIGHT_TYPES and device.light_control == "automatic":
+                return
             new_state = 0 if dev_state == 1 else 1
 
-            if new_state == 1:
+            if type_d in LIGHT_TYPES:
+                current_cons = float(power) if new_state else 0.0
+                cons_dir = 0
+                cycles_store.pop(dev_name, None)
+            elif new_state == 1:
                 current_cons = min_c
                 cons_dir = 1
                 cycle_entry = {
@@ -659,7 +721,7 @@ def toggle_device_state(canvas, event, house_state, timer_app_instance, runtime_
                 canvas.itemconfig(dev_name, fill="red" if new_state == 0 else "green")
 
             # toggle device
-            log_device_event(house_state, current_timestamp, dev_name, type_d, int(dx), int(dy), int(new_state), "user_toggle_at_click")  # [LOG]
+            log_device_event(house_state, current_timestamp, dev_name, type_d, int(dx), int(dy), int(new_state), reason)  # [LOG]
             break
 
 def update_sensors(canvas, timer_app_instance, activity_label, house_state: HouseState, runtime_sources: dict, *, schedule_next=True, force=False, delta_override=None, fast=False):
@@ -683,8 +745,8 @@ def update_sensors(canvas, timer_app_instance, activity_label, house_state: Hous
 
     ui_canvas = None if fast else canvas
 
-    s_sensors = runtime_sources["sensors"]
     d_devices = runtime_sources["devices"]
+    s_sensors = with_integrated_light_meters(runtime_sources["sensors"], d_devices)
 
     current_elapsed = timer_app_instance.elapsed_time
     if state["last_temp_elapsed"] is None:
@@ -712,6 +774,7 @@ def update_sensors(canvas, timer_app_instance, activity_label, house_state: Hous
         current_datetime=current_datetime,
     )
     state_store = house_state.sensor_states()
+    _apply_automatic_light_control(house_state, runtime_sources, timestamp)
     temperature_updates = _collect_temperature_updates(
         house_state,
         s_sensors,
@@ -746,6 +809,7 @@ def update_sensors(canvas, timer_app_instance, activity_label, house_state: Hous
     _sample_binary_sensors(house_state, s_sensors, state_store, timestamp, fast)
     _render_device_states(ui_canvas, d_devices)
     _render_sensor_states(ui_canvas, s_sensors)
+    _refresh_room_power(ui_canvas, runtime_sources)
 
     # normal scheduling
     if schedule_next and timer_app_instance.is_running and canvas is not None:

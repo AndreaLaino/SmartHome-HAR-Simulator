@@ -16,7 +16,7 @@ LIGHT_PALETTE = {
     "muted": "#4b5563",
     "accent": "#2563eb",
     "accent_hover": "#1d4ed8",
-    "disabled": "#94a3b8",
+    "disabled": "#1f2937",
     "canvas": "#ffffff",
     "grid": "#d1d5db",
     "selection": "#dbeafe",
@@ -285,7 +285,7 @@ def apply_theme_tree(
             fg="#ffffff" if primary or danger else palette["text"],
             activebackground=hover,
             activeforeground="#ffffff" if primary or danger else palette["text"],
-            disabledforeground=palette["disabled"],
+            disabledforeground="#ffffff" if primary or danger else palette["disabled"],
         )
     elif isinstance(widget, tk.Scale):
         _configure(

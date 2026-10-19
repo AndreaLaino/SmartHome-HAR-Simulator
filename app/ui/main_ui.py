@@ -36,6 +36,9 @@ from app.ui.device_inspector import (
     begin_point_segment_mode,
     install_device_inspector,
     record_wall_addition,
+    delete_selected_object,
+    undo_last_movement,
+    redo_last_movement,
 )
 from app.ui.tool_palette import ToolPalette
 from app.ui.theme import apply_theme_tree, get_theme_palette, set_theme_role
@@ -292,6 +295,19 @@ def build_home_ui(ctx: AppContext):
         "Add door\nClick two endpoints; points are created or reused automatically.",
         lambda: _menu_add_door(ctx),
     )
+    tool_palette.add_separator()
+    tool_palette.add_tool(
+        "undo", "undo", "Undo (⌘Z on Mac / Ctrl+Z)\nRestore the previous move or deleted object.",
+        lambda: undo_last_movement(ctx),
+    )
+    tool_palette.add_tool(
+        "redo", "redo", "Redo (⌘⇧Z on Mac / Ctrl+Shift+Z or Ctrl+Y)\nReapply the last undone edit.",
+        lambda: redo_last_movement(ctx),
+    )
+    tool_palette.add_tool(
+        "delete", "delete", "Delete selected object (⌘Delete on Mac / Delete)",
+        lambda: delete_selected_object(ctx),
+    )
 
     canvas = tk.Canvas(
         image_frame,
@@ -449,8 +465,11 @@ def build_home_ui(ctx: AppContext):
     file_menu.add_command(label="Open file", command=lambda: open_scenario(ctx, ctx.canvas))
     file_menu.add_command(label="Load default (saved.csv)", command=lambda: load_scenario_from_file(ctx, ctx.canvas))
     file_menu.add_separator()
-    file_menu.add_command(label="Save", command=lambda: save_scenario(ctx))
-    file_menu.add_command(label="Save As", command=lambda: save_scenario_as(ctx))
+    # On macOS the menu command runs inside AppKit's menu-tracking loop.
+    # Return to it before entering a Tk modal wait (chooser or confirmation),
+    # otherwise the menu cannot finish dismissing and the app can freeze.
+    file_menu.add_command(label="Save", command=lambda: ctx.window.after_idle(lambda: save_scenario(ctx)))
+    file_menu.add_command(label="Save As", command=lambda: ctx.window.after_idle(lambda: save_scenario_as(ctx)))
     file_menu.add_separator()
     file_menu.add_command(label="Exit", command=lambda: exit_app(ctx))
 

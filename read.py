@@ -4,7 +4,8 @@ from label_layout import create_map_label
 from canvas_zoom import to_canvas, to_canvas_length
 import csv
 import io
-from models import Point, Sensor, Device, Door, Wall
+from models import Point, Sensor, Device, Door, Wall, LightSwitch
+from lighting import LIGHT_CONTROLS, LIGHT_TYPES
 
 # Global lists to save data read from file
 coordinates: list[Point] = []
@@ -25,6 +26,8 @@ def read_coordinates_from_file(file_path):
     # Variable to track the current section
     current_section = None
     pending_walls: list[tuple[str, str]] = []
+    pending_switches = []
+    explicit_switches = False
 
     with open(file_path, "rb") as source:
         raw = source.read()
@@ -57,6 +60,10 @@ def read_coordinates_from_file(file_path):
                 continue
             elif section_name == "doors":
                 current_section = "Doors"
+                continue
+            elif section_name == "light switches":
+                current_section = "Light Switches"
+                explicit_switches = True
                 continue
             elif section_name == "rooms":
                 current_section = "Rooms"
@@ -124,7 +131,10 @@ def read_coordinates_from_file(file_path):
                         print(f"Devices row incomplete: {row}")
                         continue
                     (name_d, x_d, y_d, type_d, power, state_d, min_consumption,
-                     max_consumption, current_consumption, consumption_direction) = row
+                     max_consumption, current_consumption, consumption_direction) = row[:10]
+                    light_control = row[10].strip().lower() if len(row) > 10 else "manual"
+                    if len(row) > 11 or light_control not in LIGHT_CONTROLS:
+                        raise ValueError("Invalid light control mode")
                     x_d = int(x_d)
                     y_d = int(y_d)
                     power = float(power)
@@ -151,6 +161,7 @@ def read_coordinates_from_file(file_path):
                             max_consumption=max_consumption,
                             current_consumption=current_consumption,
                             consumption_direction=consumption_direction,
+                            light_control=light_control,
                         )
                     )
                 except ValueError:
@@ -167,12 +178,31 @@ def read_coordinates_from_file(file_path):
                 except ValueError:
                     print(f"Error in Doors row: {row}")
 
+            elif current_section == "Light Switches":
+                try:
+                    light_name, switch_name, switch_x, switch_y = row
+                    if not switch_name.strip():
+                        raise ValueError("Empty switch name")
+                    pending_switches.append((light_name, switch_name, int(switch_x), int(switch_y)))
+                except ValueError:
+                    print(f"Error in Light Switches row: {row}")
+
             elif current_section == "Rooms":
                 if len(row) >= 2:
                     room_id = row[0].strip()
                     room_type = row[1].strip()
                     if room_id and room_type:
                         read_room_overrides[room_id] = room_type
+
+    if explicit_switches:
+        lights_by_name = {device.name: device for device in read_devices if device.type in LIGHT_TYPES}
+        for light in lights_by_name.values():
+            light.light_switches = []
+        used_switch_names = set()
+        for light_name, switch_name, switch_x, switch_y in pending_switches:
+            if light_name in lights_by_name and switch_name not in used_switch_names:
+                lights_by_name[light_name].light_switches.append(LightSwitch(switch_name, switch_x, switch_y, light_name))
+                used_switch_names.add(switch_name)
 
     point_by_name = {point.name: point for point in coordinates}
     for point1, point2 in pending_walls:
@@ -214,31 +244,10 @@ def draw_sensors(read_sensors, canvas):
         draw_sensor(canvas, sensor)
 
 def draw_devices(read_devices, canvas):
+    from device import draw_device
+
     for device in read_devices:
-        name, x, y, type, state = device.name, device.x, device.y, device.type, device.state
-        color = "red" if state == 0 else "green"
-        canvas_x, canvas_y = to_canvas(canvas, x, y)
-        radius = to_canvas_length(canvas, 5)
-        marker_id = canvas.create_oval(
-            canvas_x - radius,
-            canvas_y - radius,
-            canvas_x + radius,
-            canvas_y + radius,
-            fill=color,
-            tags=(name, 'device'),
-        )
-        create_map_label(
-            canvas,
-            x,
-            y,
-            text=f"{name} ({type})",
-            fill=color,
-            tags=(name, 'device', 'device_label'),
-            kind="device",
-            font=("Helvetica", 9),
-            hover_target=marker_id,
-        )
-    raise_overlay_labels(canvas)
+        draw_device(canvas, device)
 
 def draw_doors(read_doors, canvas):
     for door in read_doors:
