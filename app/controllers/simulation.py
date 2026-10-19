@@ -67,6 +67,8 @@ def start_sim(ctx: AppContext):
     runtime_sources = _resolve_runtime_sources(ctx.load_active)
     from app.ui.rooms import refresh_rooms
     runtime_sources["rooms"] = refresh_rooms(ctx, draw=False)
+    runtime_sources["recognition_config"] = getattr(ctx, "recognition_config", {})
+    runtime_sources["recognition_library_link"] = getattr(ctx, "recognition_library_link", {})
     s_sensors = runtime_sources["sensors"]
     if not s_sensors and not any(
         device.type in LIGHT_TYPES for device in runtime_sources.get("devices", [])
@@ -202,7 +204,8 @@ def start_sim(ctx: AppContext):
 
     if not hasattr(ctx, 'activity_label') or ctx.activity_label is None:
         ctx.activity_label = tk.Label(
-            ctx.activity_frame, text="Activity: None", font=("Helvetica", 16), bg="white", fg="black"
+            ctx.activity_frame, text="Activity: None", font=("Helvetica", 16), bg="white", fg="black",
+            wraplength=350, justify=tk.LEFT, anchor="w",
         )
         ctx.activity_label.pack(pady=15, padx=10, fill=tk.BOTH, expand=True)
 

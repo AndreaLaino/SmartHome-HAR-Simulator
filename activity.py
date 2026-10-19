@@ -120,47 +120,26 @@ def process_activities(
     elif leaving:
         detected.add(leaving)
 
-    detectors = [
-        lambda: detect_laundry(sensor_states_store, d_devices),
-        lambda: detect_dishwasher(sensor_states_store, d_devices),
-    ]
-    if avatar_presence != "outside":
-        detectors.extend(
-            [
-                lambda: detect_sleeping(
-                    sensor_states_store,
-                    s_sensors,
-                    p_points,
-                    timer_app_instance,
-                    state,
-                ),
-                lambda: detect_cooking(
-                    sensor_states_store,
-                    d_devices,
-                    s_sensors,
-                    walls,
-                    d_doors,
-                ),
-                lambda: detect_meal(
-                    sensor_states_store,
-                    s_sensors,
-                    d_devices,
-                    p_points,
-                    timer_app_instance,
-                    state,
-                    walls,
-                    d_doors,
-                ),
-                lambda: detect_office(sensor_states_store, d_devices),
-            ]
-        )
+    from activity_recognition import recognize_activities
 
-    for detect in detectors:
-        act = detect()
-        if act:
-            detected.add(act)
+    recognition_runtime = {**runtime_sources, "avatar_position": house_state.sim_state().get("avatar_position")}
+    person_inside = avatar_presence != "outside" and not state.get("exit_activated", False)
+    try:
+        detected.update(recognize_activities(
+            sensor_states_store, recognition_runtime, state,
+            timer_app_instance.elapsed_time.total_seconds(), person_inside=person_inside,
+        ))
+        state.pop("recognition_error", None)
+    except (OSError, ValueError, KeyError) as error:
+        state["recognition_results"] = {}
+        state["recognition_error"] = str(error)
+    from recognition_evaluation import capture_frame, record_trace
+    record_trace(state, capture_frame(recognition_runtime, sensor_states_store,
+                                     timer_app_instance.elapsed_time.total_seconds(), person_inside=person_inside))
 
     update_activity_state(now, detected, activity_label, state, log_state)
+    if activity_label and state.get("recognition_error"):
+        activity_label.config(text="Activity recognition unavailable: " + state["recognition_error"])
 
 
 def _cancel_activity_monitor(state):
@@ -218,9 +197,13 @@ def update_activity_state(current_time, detected_activities, activity_label, sta
     active = list(current_activities.keys())
     if activity_label:
         if active:
-            activity_label.config(text="Activity: " + ", ".join(sorted(active)))
+            scores = state.get("recognition_results", {})
+            activity_label.config(text="Activity: " + ", ".join(
+                f"{name} ({scores[name]['confidence']:.0%} confidence*)" if name in scores else name
+                for name in sorted(active)))
         else:
-            activity_label.config(text="Activity: None")
+            uncertain = any(item.get("abstained") for item in state.get("recognition_results", {}).values())
+            activity_label.config(text="Activity: uncertain (below confidence threshold)" if uncertain else "Activity: None")
 
 def close_current_activity(timer_app_instance, activity_label=None, house_state: HouseState | None = None):
     state = _activity_state(house_state) if house_state is not None else {
@@ -252,7 +235,7 @@ def detect_cooking(sensor_states, devices, sensors, walls, doors):
     pir_sensors = [sensor for sensor in sensors if sensor.type.lower() == "pir"]
     for device in devices:
         x, y, device_type, device_state = device.x, device.y, device.type, device.state
-        if re.match(r'^oven\d*$', device_type, re.IGNORECASE) and device_state == 1:
+        if device.properties.get("cooking", 0) > 0 and device_state == 1:
             pir = find_closest_sensor_within_fov((x, y), pir_sensors, walls, doors, RADIUS_STANDARD, FOV_ANGLE)
             if pir:
                 pir_state = sensor_states.get(pir.name, {}).get('state', [])
@@ -267,7 +250,7 @@ def detect_laundry(sensor_states, devices):
             state = data['state'][-1] if data['state'] else 0
             if assoc:
                 for d in devices:
-                    if d.name == assoc and d.type.lower() == "washing_machine" and state > 0:
+                    if d.name == assoc and d.properties.get("laundry", 0) > 0 and state > 0:
                         return "laundry"
     return None
 
@@ -278,7 +261,7 @@ def detect_dishwasher(sensor_states, devices):
             state = data['state'][-1] if data['state'] else 0
             if assoc:
                 for d in devices:
-                    if d.name == assoc and d.type.lower() == "dishwasher" and state > 0:
+                    if d.name == assoc and d.properties.get("dishwashing", 0) > 0 and state > 0:
                         return "dishwasher"
     return None
 
@@ -289,7 +272,7 @@ def detect_office(sensor_states, devices):
             state = data['state'][-1] if data['state'] else 0
             if assoc:
                 for d in devices:
-                    if d.name == assoc and d.type.lower() == "computer" and state > 0:
+                    if d.name == assoc and d.properties.get("working", 0) > 0 and state > 0:
                         return "office"
     return None
 
@@ -661,7 +644,7 @@ def detect_meal(
         pir_sensors = [sensor for sensor in sensors if sensor.type.lower() == "pir"]
         for d in devices:
             x, y, device_type, device_state = d.x, d.y, d.type, d.state
-            if device_type.lower() == "oven" and device_state == 0:
+            if d.properties.get("cooking", 0) > 0 and device_state == 0:
                 pir = find_closest_sensor_within_fov(
                     (x, y),
                     pir_sensors,

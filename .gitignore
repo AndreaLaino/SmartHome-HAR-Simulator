@@ -84,6 +84,12 @@ llm_smartmeter_profiles.json
 # User-created scenario files
 /houses/
 
+# Shared recognition data stays local; the library bootstraps from code defaults.
+/recognition_library/library.json
+/recognition_library/houses/*.json
+/recognition_library/datasets/*.json
+/recognition_library/reports/*.json
+
 # Local scratch / archives
 /ignora/
 *.zip

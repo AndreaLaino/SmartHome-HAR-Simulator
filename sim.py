@@ -25,6 +25,7 @@ from utils import (
 )
 from common import update_sensor_states
 from lighting import LIGHT_TYPES, automatic_light_states, manual_light_at_switch, with_integrated_light_meters
+from device_properties import is_static_device
 from log import log_move, log_sensor_event, log_device_event, log_door_event, log_llm_cycle_event
 from house_state import HouseState
 from canvas_zoom import event_to_logical, to_canvas
@@ -32,7 +33,7 @@ from canvas_zoom import event_to_logical, to_canvas
 SMARTMETER_ACTIVE_THRESHOLD_W = 1.0
 
 PER_SECOND_SENSOR_SAMPLING = True
-PER_SECOND_SENSOR_TYPES = {"PIR", "Switch", "Weight"}
+PER_SECOND_SENSOR_TYPES = {"PIR", "Switch", "Weight", "Water Flow"}
 
 
 def _prepare_house_state(
@@ -191,7 +192,7 @@ def _update_smartmeter_sensors(
             }
         else:
             state_store[sensor_name].setdefault('type', 'Smart Meter')
-            state_store[sensor_name].setdefault('associated_device', associated_device)
+            state_store[sensor_name]['associated_device'] = associated_device
             state_store[sensor_name].setdefault('consumption', [])
 
         bin_state = _consumption_to_bin_state(new_consumption)
@@ -395,6 +396,7 @@ def _record_binary_sensor_event(house_state: HouseState, state_store, timestamp,
         state_store[sensor_name] = {'time': [], 'state': [], 'type': sensor_type}
     else:
         state_store[sensor_name].setdefault('type', sensor_type)
+    state_store[sensor_name]['associated_device'] = sensor.associated_device
 
     append_unique_binary(state_store[sensor_name], timestamp, sensor_state, sensor_type)
     log_sensor_event(
@@ -453,7 +455,7 @@ def _handle_weight_interaction(house_state: HouseState, s_sensors, state_store, 
     click_x, click_y = click_pos
 
     for sensor in s_sensors:
-        if sensor.type != "Weight":
+        if sensor.type not in {"Weight", "Water Flow"}:
             continue
 
         distance = calculate_distance(click_x, click_y, sensor.x, sensor.y)
@@ -461,7 +463,7 @@ def _handle_weight_interaction(house_state: HouseState, s_sensors, state_store, 
         reason = "click_nearby" if target_state == 1 else "auto_off"
         _, sensor_state = weight_adapter.update(house_state, sensor, target_state, render=False)
         sensor.state = float(sensor_state)
-        _record_binary_sensor_event(house_state, state_store, timestamp, sensor, "Weight", sensor_state, reason)
+        _record_binary_sensor_event(house_state, state_store, timestamp, sensor, sensor.type, sensor_state, reason)
 
 
 def _handle_switch_interaction(house_state: HouseState, d_doors, s_sensors, state_store, timestamp):
@@ -675,7 +677,7 @@ def toggle_device_state(canvas, event, house_state, timer_app_instance, runtime_
                 return
             new_state = 0 if dev_state == 1 else 1
 
-            if type_d in LIGHT_TYPES:
+            if type_d in LIGHT_TYPES or is_static_device(type_d):
                 current_cons = float(power) if new_state else 0.0
                 cons_dir = 0
                 cycles_store.pop(dev_name, None)

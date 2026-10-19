@@ -29,6 +29,8 @@ class AppContext:
     read_doors: list = field(default_factory=list)
     rooms: list = field(default_factory=list)
     room_overrides: dict[str, str] = field(default_factory=dict)
+    recognition_config: dict = field(default_factory=dict)
+    recognition_library_link: dict = field(default_factory=dict)
 
     # Optional reference if you need to stop a background logger on exit
     smart_logger: Optional[object] = None

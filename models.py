@@ -27,6 +27,14 @@ class Sensor:
     consumption: Optional[float] = None  # for Smart Meter
     associated_device: Optional[str] = None  # device linked to this sensor
     integrated: bool = False  # Runtime meter owned by a smart light
+    properties: Optional[dict[str, float]] = None
+    recognition_weight: float = 1.0
+    recognition_profile: Optional[str] = None
+
+    def __post_init__(self):
+        from device_properties import default_sensor_properties, normalize_properties, validate_weight
+        self.properties = normalize_properties(default_sensor_properties(self.type) if self.properties is None else self.properties)
+        self.recognition_weight = validate_weight(self.recognition_weight)
 
 
 @dataclass
@@ -54,6 +62,15 @@ class Device:
     light_control: str = "manual"  # "manual" or "automatic", independent of metering
     light_switches: Optional[List[LightSwitch]] = None  # None initializes a legacy/default switch
     _integrated_smartmeter: Optional[Sensor] = field(default=None, init=False, repr=False, compare=False)
+    properties: Optional[dict[str, float]] = None
+    recognition_weight: float = 1.0
+    recognition_profile: Optional[str] = None
+
+    def __post_init__(self):
+        from device_properties import canonical_device_type, default_device_properties, normalize_properties, validate_weight
+        self.type = canonical_device_type(self.type)
+        self.properties = normalize_properties(default_device_properties(self.type) if self.properties is None else self.properties)
+        self.recognition_weight = validate_weight(self.recognition_weight)
 
     def is_on(self) -> bool:
         """Check if device is ON."""

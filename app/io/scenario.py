@@ -308,9 +308,13 @@ def _load_scenario(ctx: AppContext, canvas, filename: str) -> None:
      ctx.read_sensors,
      ctx.read_devices,
      ctx.read_doors) = read_coordinates_from_file(filename)
-    from read import read_room_overrides
+    from read import read_room_overrides, read_recognition_config, read_recognition_link
     ctx.room_overrides.clear()
     ctx.room_overrides.update(read_room_overrides)
+    ctx.recognition_config.clear()
+    ctx.recognition_config.update(read_recognition_config)
+    ctx.recognition_library_link.clear()
+    ctx.recognition_library_link.update(read_recognition_link)
 
     ctx.load_active = True
     ctx.current_file = filename
@@ -363,6 +367,9 @@ def load_scenario_from_path(ctx: AppContext, canvas, filename: str) -> bool:
 
 def _serialize_scenario(ctx: AppContext) -> str:
     """Prepare a complete CSV before touching any existing scenario file."""
+    if getattr(ctx, "recognition_library_link", {}).get("enabled"):
+        from recognition_library import context_runtime, synchronize_runtime
+        synchronize_runtime(context_runtime(ctx))
     with io.StringIO(newline="") as csvfile:
         csvwriter = csv.writer(csvfile, delimiter=',', quotechar='"', quoting=csv.QUOTE_MINIMAL)
 
@@ -452,6 +459,30 @@ def _serialize_scenario(ctx: AppContext) -> str:
         csvwriter.writerow(["Rooms"])
         for room_id, room_type in sorted(ctx.room_overrides.items()):
             csvwriter.writerow([room_id, room_type])
+        from device_properties import normalize_properties, validate_weight
+        csvwriter.writerow([])
+        csvwriter.writerow(["Properties"])
+        objects = [("device", d) for d in srcd] + [("sensor", s) for s in src if not s.integrated]
+        for kind, obj in objects:
+            for prop, weight in normalize_properties(obj.properties).items():
+                csvwriter.writerow([kind, obj.name, prop, weight])
+        csvwriter.writerow([])
+        csvwriter.writerow(["Recognition Weights"])
+        for kind, obj in objects:
+            csvwriter.writerow([kind, obj.name, validate_weight(obj.recognition_weight)])
+        csvwriter.writerow([])
+        csvwriter.writerow(["Property Profiles"])
+        for kind, obj in objects:
+            csvwriter.writerow([kind, obj.name, obj.recognition_profile or ""])
+        csvwriter.writerow([])
+        csvwriter.writerow(["Shared Recognition"])
+        csvwriter.writerow([json.dumps(getattr(ctx, "recognition_library_link", {}), ensure_ascii=False)])
+        csvwriter.writerow([])
+        csvwriter.writerow(["Activity Recognition"])
+        config = getattr(ctx, "recognition_config", {})
+        from activity_recognition import recognition_settings
+        recognition_settings(config)
+        csvwriter.writerow([json.dumps(config, ensure_ascii=False)])
         return csvfile.getvalue()
 
 
@@ -501,6 +532,10 @@ def _clear_scenario(ctx: AppContext, canvas) -> None:
     """Internal helper: clear the scenario from canvas and memory, no confirmation."""
     from label_layout import forget_canvas_labels
 
+    recognition_window = getattr(ctx, "_recognition_window", None)
+    if recognition_window is not None and recognition_window.winfo_exists():
+        recognition_window.destroy()
+
     forget_canvas_labels(canvas)
     for tag in [
         'point', 'wall', 'sensor', 'line', 'device', 'door', 'fov',
@@ -534,6 +569,8 @@ def _clear_scenario(ctx: AppContext, canvas) -> None:
         pass
     ctx.rooms.clear()
     ctx.room_overrides.clear()
+    ctx.recognition_config.clear()
+    ctx.recognition_library_link.clear()
 
     ctx.load_active = False
     ctx.current_file = None

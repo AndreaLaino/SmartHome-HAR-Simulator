@@ -104,6 +104,87 @@ recognized rooms, nearby presence within the PIR range and clear of walls or
 closed doors is used instead. Right-click an existing light to change its control
 mode. Saved scenarios preserve this choice; older lights default to Manual.
 
+### Weighted properties and activity recognition
+
+Devices and sensors have one or more weighted properties (0–1). Oven and
+Microwave share `cooking`; TV and PlayStation share `relaxing`. Computer supports
+both `working` and `relaxing`, with a stronger default work weight. Other additions
+include Vacuum Cleaner, Kettle, Toaster, Hair Dryer, Bed, Sofa, Dining Table,
+Shower, Toilet and Sink. Furniture and water fixtures consume 0 W; new electrical
+devices use their configured constant wattage until switched off.
+
+Set property weights in the Add dialog, or right-click a device/sensor and choose
+**Properties / recognition weights…**. Properties use `name=weight`, separated
+by commas; `cooking device` and `cooking` are equivalent. A separate object weight
+controls its overall contribution. Names identify objects and sensor associations;
+activity matching uses properties, not object names. Copies keep independent
+property dictionaries. Old scenarios receive defaults automatically.
+
+Use **Scenario > Activity recognition…** to see live scores, supporting sensors,
+missing conditions, and inferred activities. Edit evidence weights, activity
+weights, thresholds, or add a custom activity based on property names. Scores are
+weighted rule support, **not calibrated probabilities**. Repeated sensors with
+the same property do not inflate its support. Rules and object weights are saved
+in the scenario CSV along with properties.
+
+In Manual simulation, associate a **Smart Meter** with an electrical appliance
+to observe its use; active nearby presence sensors also support active appliances.
+A **Weight** sensor can observe a Bed or Dining Table. A **Water Flow** sensor
+can observe a Shower or Sink; in the local simulator, clicking within 10 map units
+activates it and moving away deactivates it. Bathroom use can be supported by a
+Weight/contact sensor associated with a Toilet. Sensor associations can be edited
+in the properties window.
+
+Cooking followed by relaxing infers **eating while relaxing** without requiring
+an eating sensor. Oven → TV and Microwave → PlayStation therefore produce the
+same result. The cooking evidence decays over a configurable window (60 simulated
+minutes by default); reversed or simultaneous use does not establish the sequence.
+**Sleeping** requires continuous bedroom presence and bed weight, every light OFF,
+and zero light power for 10 simulated minutes by default. Missing lighting or room
+evidence does not count as confirmation; unrelated loads such as a fridge are
+excluded from the light-power check. Laundry/dishwashing may continue while the
+person is outside, while personal activities are suppressed.
+
+Example scenarios are in `examples/semantic_activities/`: open either cooking and
+relaxing house, start Manual simulation, switch the cooking appliance ON then OFF,
+and switch the entertainment device ON. The bedroom/bathroom example supports
+bed-weight and fixture-flow checks. Room types can be corrected through
+**Scenario > Recognize rooms** when needed.
+
+### Shared model and transfer between houses
+
+Use **Scenario > Shared recognition library…** to manage the installation-wide
+`recognition_library/` directory. Its versioned property profiles and activity
+rules are separate from house layouts and device names. A reference house is a
+baseline for comparison; the shared model is reusable by every connected house.
+
+1. Open your baseline scenario, connect the shared model, and **Set as reference
+   house**. Publish its effective rules if you want to use your local rules globally.
+2. Open another scenario and **Register as a new house**. Connect the shared model
+   and use each object's properties editor to choose a reusable profile. Factory
+   properties inherit the matching profile automatically; custom properties stay
+   local. Local rule overrides are preserved unless you uncheck that option.
+3. Compare property and sensor coverage in **Transfer report**. For example,
+   Oven → TV and Microwave → PlayStation support the same activity sequence.
+   Coverage reports possible recognition, not measured accuracy.
+4. Run Manual simulation and use **Accuracy / ground truth** to record the activities
+   actually occurring, or explicitly label a frame as having no activity. Evaluate
+   the shared model on held-out houses. Reference-house runs are excluded; unlabelled
+   frames preserve sequence context without being scored.
+
+Live **confidence** is uncalibrated rule support multiplied by evidence coverage,
+with a 0.85 factor for inferred activities. A minimum confidence setting can make
+the recognizer abstain. **Accuracy** is exact activity-set agreement with human
+labels; precision, recall, F1 and sample/house counts are also reported. Accuracy
+is unavailable until labelled held-out examples are evaluated. Keep test houses
+separate from model tuning to assess transfer honestly.
+
+Save scenario CSV files to preserve house identity, profile bindings and a frozen
+shared rule snapshot. **Disconnect** freezes the effective model locally, including
+when the library is unavailable. Shared edits invalidate previous reports until
+re-evaluation. See [the library directory guide](recognition_library/README.md)
+for the data layout and moving an experiment between installations.
+
 Confirmation dialogs for closing the application, clearing the current home,
 deleting each map-object type, and saving scenarios include a persistent
 "Don't ask again" checkbox. They can be enabled again individually—or all at

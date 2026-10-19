@@ -1,0 +1,70 @@
+Positions
+a,0,0
+b,300,0
+c,600,0
+d,600,300
+e,300,300
+f,0,300
+g,300,125
+h,300,175
+
+Walls
+a,b
+b,c
+c,d
+d,e
+e,f
+f,a
+b,g
+h,e
+
+Sensors
+bed occupancy,150,150,Weight,0.0,1.0,1.0,0.0,None,None,bed
+shower flow,450,75,Water Flow,0.0,1.0,1.0,0.0,None,None,shower
+toilet occupancy,450,150,Weight,0.0,1.0,1.0,0.0,None,None,toilet
+sink flow,450,225,Water Flow,0.0,1.0,1.0,0.0,None,None,sink
+
+Devices
+bed,150,150,Bed,0.0,0,0.0,0.0,0.0,1
+bedroom light,150,50,Smart Light,10.0,0,10.0,10.0,0.0,1,manual
+shower,450,75,Shower,0.0,0,0.0,0.0,0.0,1
+toilet,450,150,Toilet,0.0,0,0.0,0.0,0.0,1
+sink,450,225,Sink,0.0,0,0.0,0.0,0.0,1
+
+Light Switches
+bedroom light,switch_bedroom light,125,75
+
+Doors
+300,125,300,175,open
+
+Rooms
+
+Properties
+device,bed,sleeping,1.0
+device,bedroom light,lighting,1.0
+device,shower,showering,1.0
+device,shower,hygiene,1.0
+device,toilet,toileting,1.0
+device,toilet,hygiene,0.8
+device,sink,washing_hands,1.0
+device,sink,hygiene,0.8
+sensor,bed occupancy,weight,1.0
+sensor,bed occupancy,presence,0.8
+sensor,shower flow,water_flow,1.0
+sensor,toilet occupancy,weight,1.0
+sensor,toilet occupancy,presence,0.8
+sensor,sink flow,water_flow,1.0
+
+Recognition Weights
+device,bed,1.0
+device,bedroom light,1.0
+device,shower,1.0
+device,toilet,1.0
+device,sink,1.0
+sensor,bed occupancy,1.0
+sensor,shower flow,1.0
+sensor,toilet occupancy,1.0
+sensor,sink flow,1.0
+
+Activity Recognition
+{}

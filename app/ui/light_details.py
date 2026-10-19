@@ -81,6 +81,9 @@ def open_light_details(ctx, light):
     graph_button.pack(side=tk.RIGHT, padx=6)
     log_button = tk.Button(buttons, text="CSV / log…", command=lambda: show_device_csv(ctx, light))
     log_button.pack(side=tk.RIGHT)
+    from app.ui.activity_properties import open_properties_editor
+    tk.Button(content, text="Properties / recognition weights…",
+              command=lambda: open_properties_editor(ctx, light, "device")).pack(anchor="w", pady=(8, 0))
 
     def update_remove_button(_event=None):
         remove_button.configure(state="normal" if tree.selection() else "disabled")

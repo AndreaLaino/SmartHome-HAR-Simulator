@@ -20,6 +20,7 @@ from collections import deque
 from typing import Optional
 from models import Sensor, Device
 from lighting import LIGHT_TYPES
+from device_properties import is_static_device, default_sensor_properties, format_properties, parse_properties
 from house_state import HouseState
 from canvas_zoom import event_to_logical, snap_logical_position
 
@@ -578,6 +579,7 @@ def add_sensor(canvas, event, load_active, on_changed=None, on_finished=None):
                 direction=direction,
                 consumption=consumption,
                 associated_device=associated_device,
+                properties=dialog.result_properties if isinstance(getattr(dialog, "result_properties", None), dict) else None,
             )
 
             # write to the right list according to load_active
@@ -2362,7 +2364,7 @@ def compute_smartmeter_consumption(sensor, devices, delta_seconds, current_datet
                 dev_type = associated_dev.type
                 dev_state = associated_dev.state
 
-        if associated_dev is not None and dev_type in LIGHT_TYPES:
+        if associated_dev is not None and (dev_type in LIGHT_TYPES or is_static_device(dev_type)):
             return float(associated_dev.power) if dev_state == 1 else 0.0
 
         llm_consumption = _get_llm_smartmeter_consumption(
@@ -2427,7 +2429,7 @@ class SensorDialog(simpledialog.Dialog):
 
         self.sensor_type = ttk.Combobox(
             master,
-            values=["PIR", "Temperature", "Switch", "Smart Meter", "Weight"],
+            values=["PIR", "Temperature", "Switch", "Smart Meter", "Weight", "Water Flow"],
             state="readonly",
         )
         self.sensor_type.grid(row=1, column=1)
@@ -2442,6 +2444,9 @@ class SensorDialog(simpledialog.Dialog):
         devices_names = self._device_names_for_association()
 
         self.associated_device_combobox = ttk.Combobox(master, values=devices_names, state="readonly")
+        tk.Label(master, text="Properties / weights (0–1):").grid(row=4, column=0, sticky="w")
+        self.property_weights = tk.Entry(master, width=48)
+        self.property_weights.grid(row=4, column=1, pady=6)
 
         self.sensor_type.bind("<<ComboboxSelected>>", self.on_sensor_type_selected)
         self.on_sensor_type_selected(None)
@@ -2450,6 +2455,8 @@ class SensorDialog(simpledialog.Dialog):
     # Show 'direction' for PIR or 'associated device' for Smart Meter only.
     def on_sensor_type_selected(self, event):
         type = self.sensor_type.get()
+        self.property_weights.delete(0, tk.END)
+        self.property_weights.insert(0, format_properties(default_sensor_properties(type)))
 
         if type == "PIR":
             self.direction_label.grid(row=2, column=0)
@@ -2479,11 +2486,18 @@ class SensorDialog(simpledialog.Dialog):
         else:
             self.direction_label.grid_remove()
             self.direction_entry.grid_remove()
-            self.associated_device_label.grid_remove()
-            self.associated_device_combobox.grid_remove()
+            self.associated_device_label.grid(row=2, column=0)
+            self.associated_device_combobox.grid(row=2, column=1)
+            self.associated_device_combobox.configure(values=["", *self._device_names_for_association()], state="readonly")
+            self.associated_device_combobox.set("")
 
     # Check for empty/duplicate name; require direction (PIR) or device (Smart Meter).
     def validate(self):
+        try:
+            self.result_properties = parse_properties(self.property_weights.get())
+        except ValueError as error:
+            messagebox.showwarning("Input not valid", str(error))
+            return False
         name = self.sensor_name.get().strip()
         if not name:
             messagebox.showwarning("Input not valid", "Sensor name cannot be empty.")
@@ -2530,8 +2544,8 @@ class SensorDialog(simpledialog.Dialog):
             params["direction"] = direction
 
         associated_device = None
-        if type == "Smart Meter":
-            associated_device = self.associated_device_combobox.get()
+        if type != "PIR":
+            associated_device = self.associated_device_combobox.get() or None
 
         if type == "Temperature":
             # If a CSV series exists, use its first value as the initial state.

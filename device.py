@@ -5,6 +5,7 @@ from tkinter import ttk
 from read import read_devices as device_file
 from models import Device
 from lighting import LIGHT_TYPES, NORMAL_LIGHT, SMART_LIGHT, ensure_light_switches
+from device_properties import DEVICE_PROPERTIES, STATIC_DEVICE_POWER, canonical_device_type, default_device_properties, format_properties, parse_properties
 from utils import raise_overlay_labels
 from label_layout import create_map_label
 from canvas_zoom import event_to_logical, snap_logical_position, to_canvas, to_canvas_length
@@ -13,6 +14,10 @@ devices = []
 
 
 def get_device_params(device_type):
+    device_type = canonical_device_type(device_type)
+    if device_type in STATIC_DEVICE_POWER:
+        watts = STATIC_DEVICE_POWER[device_type]
+        return {"power": watts, "min_consumption": watts, "max_consumption": watts}
     params = {
         "Fridge": {"power": 150, "min_consumption": 50,  "max_consumption": 150},
         "Washing_Machine":   {"power": 500, "min_consumption": 300, "max_consumption": 500},
@@ -34,8 +39,7 @@ class DeviceDialog(simpledialog.Dialog):
         tk.Label(master, text="Device type:").grid(row=1)
         self.device_name = tk.Entry(master)
         self.device_name.grid(row=0, column=1)
-        self.device_type = ttk.Combobox(master, values=[
-            "Fridge", "Washing_Machine", "Oven", "Coffee_Machine", "Computer", "Dishwasher", NORMAL_LIGHT, SMART_LIGHT])
+        self.device_type = ttk.Combobox(master, values=[name for name in DEVICE_PROPERTIES if name != "Lighting"], state="readonly")
         self.device_type.grid(row=1, column=1)
         self.device_type.current(0)
         self.lighting_power_label = tk.Label(master, text="Lighting power (W):")
@@ -48,10 +52,20 @@ class DeviceDialog(simpledialog.Dialog):
         self.lighting_control_hint = tk.Label(
             master, text="Manual adds an ON/OFF switch. Automatic follows room presence.",
         )
+        tk.Label(master, text="Properties / weights (0–1):").grid(row=6, column=0, sticky="w")
+        self.property_weights = tk.Entry(master, width=48)
+        self.property_weights.grid(row=6, column=1, pady=6)
+        self.property_weights.insert(0, format_properties(default_device_properties(self.device_type.get())))
+        tk.Label(master, text="Example: cooking=1, heating=0.8. Multiple properties are supported.",
+                 wraplength=520).grid(row=7, column=0, columnspan=2, padx=6, pady=6)
+        tk.Label(master, text="A Smart Meter observes electrical use. Weight and Water Flow sensors can observe furniture and fixtures.",
+                 wraplength=520).grid(row=8, column=0, columnspan=2, padx=6, pady=6)
         self.device_type.bind("<<ComboboxSelected>>", self.on_device_type_selected)
         return self.device_name
 
     def on_device_type_selected(self, _event=None):
+        self.property_weights.delete(0, tk.END)
+        self.property_weights.insert(0, format_properties(default_device_properties(self.device_type.get())))
         if self.device_type.get() in LIGHT_TYPES:
             self.lighting_power_label.grid(row=2, column=0)
             self.lighting_power.grid(row=2, column=1)
@@ -73,6 +87,11 @@ class DeviceDialog(simpledialog.Dialog):
             self.lighting_control_hint.grid_remove()
 
     def validate(self):
+        try:
+            self.result_properties = parse_properties(self.property_weights.get())
+        except ValueError as error:
+            messagebox.showwarning("Input not valid", str(error))
+            return False
         name = self.device_name.get().strip()
         if not name:
             messagebox.showwarning("Input not valid", "Device name cannot be empty.")
@@ -130,6 +149,7 @@ def add_device(canvas, event, load_active, on_changed=None, on_finished=None):
                 current_consumption=0.0,
                 consumption_direction=1,
                 light_control=control[0] if control else "manual",
+                properties=dialog.result_properties if isinstance(getattr(dialog, "result_properties", None), dict) else None,
             )
 
             if load_active:

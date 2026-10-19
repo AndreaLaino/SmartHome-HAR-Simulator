@@ -25,6 +25,7 @@ from sensor import (
 )
 from consumption_profiles import consumption_profiles
 from lighting import LIGHT_TYPES
+from device_properties import is_static_device
 from read import read_sensors, read_devices
 from device import devices
 from app.hardware import real_sensors
@@ -280,7 +281,7 @@ def _profile_for_smartmeter(
 def _llm_info_for_smartmeter(sensor_name: str, sensor_states: dict) -> dict:
     associated_device = _associated_device_name(sensor_name, sensor_states)
     device_type = _device_type_for_name(associated_device)
-    if device_type in LIGHT_TYPES:
+    if device_type in LIGHT_TYPES or is_static_device(device_type):
         return {
             "source": "static",
             "smartmeter_mode": "static",
@@ -1084,7 +1085,7 @@ def show_graphs(canvas, sensor_states, preselected_sensors=None):
             y_series = state_list
             if sensor_type == "Temperature":
                 y_label = "Temperature (°C)"
-            elif sensor_type in ("PIR", "Switch"):
+            elif sensor_type in ("PIR", "Switch", "Water Flow"):
                 y_label = "State"
             else:
                 y_label = "Value"
@@ -1266,7 +1267,7 @@ def show_graphs_auto(sensor_states, selected_keys, target_frame):
             y_series = state_list
             if sensor_type == "Temperature":
                 y_label = "Temperature (°C)"
-            elif sensor_type in ("PIR", "Switch"):
+            elif sensor_type in ("PIR", "Switch", "Water Flow"):
                 y_label = "State"
             else:
                 y_label = "Value"

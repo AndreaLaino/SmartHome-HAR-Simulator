@@ -7,6 +7,7 @@ from typing import Optional
 from consumption_profiles import consumption_profiles, get_device_consumption
 from models import Sensor, Device, Point, Door, Wall
 from lighting import LIGHT_TYPES
+from device_properties import is_static_device
 from label_layout import create_map_label, layout_map_labels
 from canvas_zoom import to_canvas, to_canvas_length
 
@@ -502,7 +503,7 @@ def update_devices_consumption(canvas, devices, delta_seconds, timer_app_instanc
             device.consumption_direction,
         )
 
-        if type in LIGHT_TYPES:
+        if type in LIGHT_TYPES or is_static_device(type):
             device.current_consumption = float(power) if state == 1 else 0.0
             continue
 

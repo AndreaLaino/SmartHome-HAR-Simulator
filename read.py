@@ -6,6 +6,8 @@ import csv
 import io
 from models import Point, Sensor, Device, Door, Wall, LightSwitch
 from lighting import LIGHT_CONTROLS, LIGHT_TYPES
+import json
+from device_properties import normalize_properties, validate_weight
 
 # Global lists to save data read from file
 coordinates: list[Point] = []
@@ -14,6 +16,8 @@ read_sensors: list[Sensor] = []
 read_devices: list[Device] = []
 read_doors: list[Door] = []
 read_room_overrides: dict[str, str] = {}
+read_recognition_config: dict = {}
+read_recognition_link: dict = {}
 
 def read_coordinates_from_file(file_path):
     coordinates.clear()
@@ -22,12 +26,17 @@ def read_coordinates_from_file(file_path):
     read_devices.clear()
     read_doors.clear()
     read_room_overrides.clear()
+    read_recognition_config.clear()
+    read_recognition_link.clear()
 
     # Variable to track the current section
     current_section = None
     pending_walls: list[tuple[str, str]] = []
     pending_switches = []
     explicit_switches = False
+    pending_properties = {}
+    pending_weights = {}
+    pending_profiles = {}
 
     with open(file_path, "rb") as source:
         raw = source.read()
@@ -68,6 +77,9 @@ def read_coordinates_from_file(file_path):
             elif section_name == "rooms":
                 current_section = "Rooms"
                 continue
+            elif section_name in {"properties", "recognition weights", "activity recognition", "property profiles", "shared recognition"}:
+                current_section = section_name
+                continue
 
             if current_section == "Positions":
                 try:
@@ -98,7 +110,7 @@ def read_coordinates_from_file(file_path):
                     max_val = float(max_val)
                     step = float(step)
                     state_s = float(state_s)
-                    if type in ("PIR", "Weight"):
+                    if type in ("PIR", "Weight", "Water Flow"):
                         state_s = 0.0
                     # the direction field: if "None" or empty, set None, otherwise convert to float
                     direction = None if direction in ("", "None") else float(direction)
@@ -187,12 +199,38 @@ def read_coordinates_from_file(file_path):
                 except ValueError:
                     print(f"Error in Light Switches row: {row}")
 
+            elif current_section == "properties":
+                kind, name, prop, weight = row
+                pending_properties.setdefault((kind, name), {})[prop] = validate_weight(weight)
+            elif current_section == "recognition weights":
+                kind, name, weight = row
+                pending_weights[(kind, name)] = validate_weight(weight)
+            elif current_section == "property profiles":
+                kind, name, profile = row
+                pending_profiles[(kind, name)] = profile or None
+            elif current_section == "shared recognition":
+                link = json.loads(row[0])
+                if not isinstance(link, dict):
+                    raise ValueError("Invalid shared library link.")
+                read_recognition_link.update(link)
+            elif current_section == "activity recognition":
+                from activity_recognition import recognition_settings
+                config = json.loads(row[0])
+                recognition_settings(config)
+                read_recognition_config.update(config)
             elif current_section == "Rooms":
                 if len(row) >= 2:
                     room_id = row[0].strip()
                     room_type = row[1].strip()
                     if room_id and room_type:
                         read_room_overrides[room_id] = room_type
+
+    for kind, objects in (("device", read_devices), ("sensor", read_sensors)):
+        for obj in objects:
+            if (kind, obj.name) in pending_properties:
+                obj.properties = normalize_properties(pending_properties[(kind, obj.name)])
+            obj.recognition_weight = pending_weights.get((kind, obj.name), 1.0)
+            obj.recognition_profile = pending_profiles.get((kind, obj.name))
 
     if explicit_switches:
         lights_by_name = {device.name: device for device in read_devices if device.type in LIGHT_TYPES}

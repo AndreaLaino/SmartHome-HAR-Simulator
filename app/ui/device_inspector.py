@@ -1358,6 +1358,10 @@ def _show_selection_actions(ctx, selection: MapSelection, event) -> None:
     )
     menu.add_separator()
     menu.add_command(label="Details...", command=lambda: _show_details(ctx, selection))
+    if selection.kind in {"device", "sensor"}:
+        from app.ui.activity_properties import open_properties_editor
+        menu.add_command(label="Properties / recognition weights…",
+                         command=lambda: open_properties_editor(ctx, value, selection.kind))
     if selection.kind == "device":
         if value.type in LIGHT_TYPES:
             menu.add_command(label="Add switch", command=lambda: add_switch_to_light(ctx, value),

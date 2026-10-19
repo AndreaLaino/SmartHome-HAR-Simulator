@@ -169,6 +169,7 @@ class LightingTests(unittest.TestCase):
         dialog.device_type = Mock(get=lambda: "Lighting")
         dialog.lighting_power = Mock()
         dialog.lighting_control = Mock(get=lambda: "Manual")
+        dialog.property_weights = Mock(get=lambda: "lighting=1")
         with patch.object(device, "devices", []), patch.object(device, "device_file", []), \
                 patch.object(device.messagebox, "showwarning"):
             for value in ("", "bad", "0", "-1", "nan", "inf"):

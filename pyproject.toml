@@ -43,11 +43,13 @@ exclude_also = ["if __name__ == [\"']__main__[\"']:"]
 [tool.setuptools]
 py-modules = [
   "activity",
+  "activity_recognition",
   "automatic",
   "canvas_zoom",
   "common",
   "consumption_profiles",
   "device",
+  "device_properties",
   "door",
   "graph",
   "house_state",
@@ -60,6 +62,8 @@ py-modules = [
   "point",
   "prediction",
   "read",
+  "recognition_library",
+  "recognition_evaluation",
   "room_recognition",
   "sensor",
   "sim",

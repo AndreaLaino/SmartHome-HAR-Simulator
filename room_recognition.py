@@ -32,6 +32,16 @@ _DEVICE_SCORES = {
     "computer": {"Office": 4},
     "pc": {"Office": 4},
     "tv": {"Living room": 5},
+    "microwave": {"Kitchen": 6},
+    "toaster": {"Kitchen": 4},
+    "kettle": {"Kitchen": 3},
+    "playstation": {"Living room": 5},
+    "sofa": {"Living room": 5},
+    "bed": {"Bedroom": 8},
+    "dining table": {"Dining room": 6},
+    "shower": {"Bathroom": 8},
+    "toilet": {"Bathroom": 8},
+    "sink": {"Bathroom": 4},
 }
 
 _POINT_KEYWORDS = {

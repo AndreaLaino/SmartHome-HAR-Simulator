@@ -23,6 +23,7 @@ import door
 import log
 import point
 import read
+import recognition_library
 import sensor
 import wall
 from app import preferences, save_paths
@@ -82,6 +83,7 @@ class TkSmokeTests(unittest.TestCase):
         self.stack = ExitStack()
         self.addCleanup(self.stack.close)
         self.root = Path(self.stack.enter_context(tempfile.TemporaryDirectory()))
+        self.stack.enter_context(patch.object(recognition_library, "LIBRARY_DIR", self.root / "recognition_library"))
         self.stack.enter_context(patch.object(preferences, "PREFERENCES_PATH", self.root / "settings.json"))
         self.stack.enter_context(patch.object(save_paths, "SAVES_DIR", self.root / "saves"))
         self.stack.enter_context(patch.object(save_paths, "HOUSES_DIR", self.root / "houses"))
@@ -396,6 +398,192 @@ class TkSmokeTests(unittest.TestCase):
         self.assertEqual(dialog.lighting_power.winfo_manager(), "")
         self.assertEqual(dialog.lighting_control.winfo_manager(), "")
         frame.destroy()
+
+    def test_properties_rules_and_new_device_sensor_dialogs_save_and_reload(self):
+        from app.ui.activity_properties import open_properties_editor
+        from activity_recognition import recognize_activities
+
+        self.load_home()
+        self.window.geometry("1000x700")
+        self.window.deiconify()
+        self.pump()
+        oven = self.ctx.read_devices[0]
+
+        def button(parent, text):
+            for child in parent.winfo_children():
+                if isinstance(child, tk.Button) and child.cget("text") == text:
+                    return child
+                result = button(child, text)
+                if result is not None:
+                    return result
+            return None
+
+        editor = open_properties_editor(self.ctx, oven, "device")
+        editor._property_entry.delete(0, tk.END)
+        editor._property_entry.insert(0, "cooking=-1")
+        button(editor, "Apply").invoke()
+        self.pump()
+        self.assertTrue(editor.winfo_exists())
+        self.assertEqual(oven.properties["cooking"], 1)
+        editor._property_entry.delete(0, tk.END)
+        editor._property_entry.insert(0, "cooking=0.9, working=0.2")
+        button(editor, "Apply").invoke()
+        self.pump()
+        self.assertEqual(oven.properties, {"cooking": .9, "working": .2})
+
+        self.ctx.scenario_menu.invoke("Activity recognition…")
+        self.pump()
+        window = self.ctx._recognition_window
+        entries = window._recognition_entries
+        entries["name"].set("cooking")
+        entries["name"].event_generate("<<ComboboxSelected>>")
+        self.pump()
+        entries["threshold"].delete(0, tk.END)
+        entries["threshold"].insert(0, ".7")
+        button(window, "Apply rule and timing").invoke()
+        self.pump()
+        self.assertEqual(self.ctx.recognition_config["rules"]["cooking"]["threshold"], .7)
+        self.assertIn("taking a shower", window._recognition_tree.get_children())
+
+        runtime = {"devices": [oven], "sensors": [], "recognition_config": self.ctx.recognition_config}
+        recognize_activities({"m": {"type": "Smart Meter", "associated_device": oven.name, "state": [1]}},
+                             runtime, self.ctx.house_state.activity_state(), 0)
+        deadline = time.monotonic() + 1
+        while window._recognition_tree.set("cooking", "score") == "—" and time.monotonic() < deadline:
+            self.pump()
+            time.sleep(.01)
+        self.assertEqual(window._recognition_tree.set("cooking", "status"), "Recognized")
+        button(window, "Close").invoke()
+
+        frame = tk.Frame(self.window)
+        dialog = device.DeviceDialog.__new__(device.DeviceDialog)
+        dialog.body(frame)
+        for kind in ("Microwave", "TV", "PlayStation", "Bed", "Shower", "Toilet"):
+            self.assertIn(kind, dialog.device_type["values"])
+        dialog.device_type.set("Microwave")
+        dialog.device_type.event_generate("<<ComboboxSelected>>")
+        self.pump()
+        self.assertIn("cooking=1", dialog.property_weights.get())
+        frame.destroy()
+
+        frame = tk.Frame(self.window)
+        dialog = sensor.SensorDialog.__new__(sensor.SensorDialog)
+        dialog._preloaded_device_names = [oven.name]
+        dialog.body(frame)
+        dialog.sensor_type.set("Water Flow")
+        dialog.sensor_type.event_generate("<<ComboboxSelected>>")
+        self.pump()
+        self.assertEqual(dialog.property_weights.get(), "water_flow=1")
+        dialog.associated_device_combobox.set(oven.name)
+        dialog.sensor_name.insert(0, "fixture flow")
+        self.assertTrue(dialog.validate())
+        dialog.apply()
+        self.assertEqual(dialog.result[-1], oven.name)
+        frame.destroy()
+
+        path = self.root / "properties.csv"
+        with patch.object(scenario.messagebox, "showinfo"):
+            self.assertTrue(scenario._write_scenario(self.ctx, path))
+        self.assertTrue(scenario.load_scenario_from_path(self.ctx, self.ctx.canvas, path))
+        self.pump()
+        self.assertEqual(self.ctx.read_devices[0].properties, {"cooking": .9, "working": .2})
+        self.assertEqual(self.ctx.recognition_config["rules"]["cooking"]["threshold"], .7)
+        self.window.withdraw()
+
+    def test_shared_library_profiles_transfer_ground_truth_and_scenario_round_trip(self):
+        from app.ui.activity_properties import open_properties_editor
+        from recognition_evaluation import capture_frame, record_trace
+
+        self.load_home()
+        self.window.deiconify()
+        self.ctx.scenario_menu.invoke("Shared recognition library…")
+        self.pump()
+        window = self.ctx._recognition_library_window
+
+        def button(parent, text):
+            for child in parent.winfo_children():
+                if isinstance(child, tk.Button) and child.cget("text") == text:
+                    return child
+                found = button(child, text)
+                if found is not None:
+                    return found
+            return None
+
+        def invoke(text, parent=window):
+            widget = button(parent, text)
+            self.assertIsNotNone(widget, text)
+            widget.invoke()
+            self.pump()
+
+        def replace(entry, text):
+            entry.delete(0, tk.END)
+            entry.insert(0, text)
+
+        replace(window._house_name, "Reference house")
+        invoke("Connect shared model")
+        invoke("Set as reference house")
+        reference_id = self.ctx.recognition_library_link["house_id"]
+        oven = self.ctx.read_devices[0]
+        oven.state = 1
+        state = self.ctx.house_state.activity_state()
+        observations = {"motion": {"state": [1]}}
+        record_trace(state, capture_frame(recognition_library.context_runtime(self.ctx), observations, 0))
+        labels = window._ground_truth_labels
+        labels.selection_set(list(labels.get(0, tk.END)).index("cooking"))
+        window._library_tabs.select(2)
+        invoke("Record human-labelled frame")
+        invoke("Evaluate current shared model on held-out houses")
+        self.assertIn("accuracy: N/A", window._metric_summary.get())
+        self.assertIn("1 reference runs excluded", window._metric_summary.get())
+
+        state.clear()
+        replace(window._house_name, "Target house")
+        invoke("Register as a new house")
+        self.assertNotEqual(self.ctx.recognition_library_link["house_id"], reference_id)
+        oven.type = "Microwave"
+        editor = open_properties_editor(self.ctx, oven, "device")
+        editor._property_profile_choice.set("device:Microwave")
+        editor._property_profile_choice.event_generate("<<ComboboxSelected>>")
+        invoke("Apply", parent=editor)
+        self.assertEqual(oven.recognition_profile, "device:Microwave")
+        window._library_tabs.select(1)
+        invoke("Compare properties and sensor coverage")
+        self.assertEqual(window._transfer_tree.set("cooking", "coverage"), "100%")
+        self.assertEqual(window._transfer_tree.set("cooking", "ready"), "Yes")
+        record_trace(state, capture_frame(recognition_library.context_runtime(self.ctx), observations, 0))
+        window._library_tabs.select(2)
+        invoke("Record human-labelled frame")
+        invoke("Evaluate current shared model on held-out houses")
+        self.assertIn("accuracy: 100.0%", window._metric_summary.get())
+        self.assertIn("1 labelled frames, 1 held-out houses", window._metric_summary.get())
+        evaluate_button = button(window, "Evaluate current shared model on held-out houses")
+        self.assertTrue(evaluate_button.winfo_ismapped())
+        self.assertLess(evaluate_button.winfo_rooty() + evaluate_button.winfo_height(), window.winfo_rooty() + window.winfo_height())
+
+        window._library_tabs.select(0)
+        replace(window._shared_profile_weights, "cooking=0.2, heating=0.8")
+        invoke("Save shared profile")
+        self.assertIn("stale", window._metric_summary.get())
+        self.assertEqual(window._transfer_tree.get_children(), ())
+        window._library_tabs.select(2)
+        invoke("Evaluate current shared model on held-out houses")
+        self.assertIn("accuracy: 0.0%", window._metric_summary.get())
+        window._library_tabs.select(0)
+        fields = window._shared_rule_fields
+        fields["name"].set("custom relaxation")
+        replace(fields["weights"], "relaxing=1")
+        invoke("Save shared rule")
+        self.assertIn("custom relaxation", window._ground_truth_labels.get(0, tk.END))
+
+        destination = self.root / "shared-house.csv"
+        with patch.object(scenario.messagebox, "showinfo"):
+            self.assertTrue(scenario._write_scenario(self.ctx, destination))
+        self.assertTrue(scenario.load_scenario_from_path(self.ctx, self.ctx.canvas, destination))
+        self.pump()
+        self.assertTrue(self.ctx.recognition_library_link["enabled"])
+        self.assertEqual(self.ctx.read_devices[0].recognition_profile, "device:Microwave")
+        self.assertEqual(self.ctx.read_devices[0].properties["cooking"], .2)
+        invoke("Close")
 
     def check_light_only_manual_simulation(self, light_type):
         content = SMOKE_SCENARIO.replace("motion,50,50,PIR,0,1,1,0,90,None,None\n", "")
