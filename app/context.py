@@ -3,6 +3,7 @@ from dataclasses import dataclass, field
 import tkinter as tk
 from typing import Optional
 from house_state import HouseState
+from har.storage import new_house_config
 
 @dataclass
 class AppContext:
@@ -34,3 +35,4 @@ class AppContext:
     smart_logger: Optional[object] = None
     house_state: HouseState = field(default_factory=HouseState)
     automatic_state: dict = field(default_factory=dict)
+    har_config: dict = field(default_factory=new_house_config)

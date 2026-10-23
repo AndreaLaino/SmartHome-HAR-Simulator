@@ -1,0 +1,49 @@
+Positions
+a,60,60
+b,390,60
+c,720,60
+d,720,420
+e,390,420
+f,60,420
+g,390,230
+h,390,290
+
+Walls
+a,b
+b,c
+c,d
+d,e
+e,f
+f,a
+b,g
+h,e
+
+Sensors
+target_kitchen_power,260,160,Smart Meter,0.0,1100.0,1.0,0.0,None,0.0,target_microwave
+target_kitchen_motion,160,230,PIR,0.0,1.0,1.0,0.0,315,None,
+target_living_power,630,160,Smart Meter,0.0,180.0,1.0,0.0,None,0.0,target_console
+target_living_motion,530,230,PIR,0.0,1.0,1.0,0.0,315,None,
+
+Devices
+target_microwave,200,160,Microwave,1100.0,0,1100.0,1100.0,0.0,1
+target_console,570,160,PlayStation,180.0,0,180.0,180.0,0.0,1
+
+Light Switches
+
+Doors
+390,230,390,290,open
+
+Rooms
+room-0ee767da18,Living room
+room-4b45ba0689,Kitchen
+
+HAR metadata
+config,"{""house_id"": ""demo-target"", ""house_label"": ""Demo: Microwave / PlayStation"", ""model_id"": null}"
+
+HAR categories
+device,target_microwave,"[""DeviceCooking""]"
+device,target_console,"[""DeviceEntertainment""]"
+sensor,target_kitchen_power,"[""SensorPower""]"
+sensor,target_kitchen_motion,"[""SensorPresence""]"
+sensor,target_living_power,"[""SensorPower""]"
+sensor,target_living_motion,"[""SensorPresence""]"

@@ -485,6 +485,15 @@ def build_home_ui(ctx: AppContext):
     scenario_menu.add_command(label="Add sensors", command=lambda: _menu_add_sensor(ctx))
     scenario_menu.add_separator()
     scenario_menu.add_command(label="Recognize rooms", command=lambda: open_rooms_ui(ctx))
+    def learned_recognition():
+        from app.ui.learned_har import open_learned_har
+
+        open_learned_har(ctx)
+
+    scenario_menu.add_command(
+        label="Learned activity recognition…",
+        command=lambda: ctx.window.after_idle(learned_recognition),
+    )
 
     # Settings menu (personal preferences, independent from scenario files)
     settings_menu = Menu(menu_bar, tearoff=0)

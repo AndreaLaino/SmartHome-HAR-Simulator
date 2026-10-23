@@ -4,6 +4,7 @@ from label_layout import create_map_label
 from canvas_zoom import to_canvas, to_canvas_length
 import csv
 import io
+import json
 from models import Point, Sensor, Device, Door, Wall, LightSwitch
 from lighting import LIGHT_CONTROLS, LIGHT_TYPES
 
@@ -14,6 +15,7 @@ read_sensors: list[Sensor] = []
 read_devices: list[Device] = []
 read_doors: list[Door] = []
 read_room_overrides: dict[str, str] = {}
+read_har_config: dict = {}
 
 def read_coordinates_from_file(file_path):
     coordinates.clear()
@@ -22,12 +24,14 @@ def read_coordinates_from_file(file_path):
     read_devices.clear()
     read_doors.clear()
     read_room_overrides.clear()
+    read_har_config.clear()
 
     # Variable to track the current section
     current_section = None
     pending_walls: list[tuple[str, str]] = []
     pending_switches = []
     explicit_switches = False
+    pending_categories = []
 
     with open(file_path, "rb") as source:
         raw = source.read()
@@ -67,6 +71,12 @@ def read_coordinates_from_file(file_path):
                 continue
             elif section_name == "rooms":
                 current_section = "Rooms"
+                continue
+            elif section_name == "har metadata":
+                current_section = "HAR metadata"
+                continue
+            elif section_name == "har categories":
+                current_section = "HAR categories"
                 continue
 
             if current_section == "Positions":
@@ -193,6 +203,39 @@ def read_coordinates_from_file(file_path):
                     room_type = row[1].strip()
                     if room_id and room_type:
                         read_room_overrides[room_id] = room_type
+
+            elif current_section == "HAR metadata":
+                try:
+                    from har.storage import validate_house_config
+
+                    if len(row) != 2 or row[0] != "config":
+                        raise ValueError("Invalid HAR metadata row")
+                    config = validate_house_config(json.loads(row[1]))
+                    read_har_config.clear()
+                    read_har_config.update(config)
+                except (ValueError, TypeError):
+                    print("Ignoring invalid HAR metadata")
+
+            elif current_section == "HAR categories":
+                try:
+                    kind, name, raw_categories = row
+                    categories = json.loads(raw_categories)
+                    if kind not in ("device", "sensor") or not isinstance(categories, list):
+                        raise ValueError("Invalid object categories")
+                    if any(not isinstance(category, str) or not category.strip() for category in categories):
+                        raise ValueError("Invalid category name")
+                    # Preserve custom metadata even when the shared dictionary
+                    # is unavailable. Category use is validated against the
+                    # selected/frozen dictionary at recording and prediction.
+                    pending_categories.append((kind, name, list(dict.fromkeys(categories))))
+                except (ValueError, TypeError):
+                    print("Ignoring invalid HAR categories")
+
+    for kind, name, categories in pending_categories:
+        objects = read_devices if kind == "device" else read_sensors
+        for obj in objects:
+            if obj.name == name:
+                obj.categories = categories
 
     if explicit_switches:
         lights_by_name = {device.name: device for device in read_devices if device.type in LIGHT_TYPES}

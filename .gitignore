@@ -61,6 +61,8 @@ Thumbs.db
 
 # Project simulation outputs (temporary data)
 /saves/
+/har_data/
+/recognition_library/
 llm_smartmeter_profiles.json
 !LLM/smartmeter/llm_smartmeter_profiles.json
 **/*_case_output/

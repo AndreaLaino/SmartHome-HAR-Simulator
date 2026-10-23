@@ -27,6 +27,7 @@ class Sensor:
     consumption: Optional[float] = None  # for Smart Meter
     associated_device: Optional[str] = None  # device linked to this sensor
     integrated: bool = False  # Runtime meter owned by a smart light
+    categories: Optional[List[str]] = None  # None: shared type defaults; []: deliberately unclassified
 
 
 @dataclass
@@ -53,6 +54,7 @@ class Device:
     consumption_direction: int = 1  # 1 = increasing, -1 = decreasing
     light_control: str = "manual"  # "manual" or "automatic", independent of metering
     light_switches: Optional[List[LightSwitch]] = None  # None initializes a legacy/default switch
+    categories: Optional[List[str]] = None  # Categories describe the object, never its activity
     _integrated_smartmeter: Optional[Sensor] = field(default=None, init=False, repr=False, compare=False)
 
     def is_on(self) -> bool:

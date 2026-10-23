@@ -529,8 +529,8 @@ def _prepare_interaction_context(canvas, event, timer_app_instance, house_state:
     log_move(house_state, timestamp, int(click_x), int(click_y))
 
     s_sensors = with_integrated_light_meters(runtime_sources["sensors"], runtime_sources["devices"])
-    if not s_sensors and not any(device.type in LIGHT_TYPES for device in runtime_sources["devices"]):
-        print("No sensors exists.")
+    if not s_sensors and not runtime_sources["devices"]:
+        print("No devices or sensors exist.")
         return None
 
     return {
@@ -574,7 +574,7 @@ def _run_interaction_flow(canvas, event, timer_app_instance, runtime_sources: di
         toggle_device_state(canvas, None, house_state, timer_app_instance, runtime_sources,
                             x=switched_light.x, y=switched_light.y, render=False,
                             reason="light_switch", target_device=switched_light)
-    elif closest_sensor_pir:
+    elif closest_sensor_pir or not s_sensors:
         _handle_device_toggle_at_click(
             canvas,
             house_state,

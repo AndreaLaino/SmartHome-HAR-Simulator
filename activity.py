@@ -1,4 +1,5 @@
 import re
+import logging
 from datetime import timedelta
 
 from log import log_activity_start, log_activity_end, log_end_of_simulation
@@ -13,6 +14,7 @@ EXIT_MOTION_WINDOW = 10  # elapsed timer seconds, equivalent to 10 simulated min
 ENTRY_MOTION_WINDOW = 5
 EXIT_CONFIRMATION_DELAY = 5
 ENTRY_ACTIVITY_DURATION = 3
+logger = logging.getLogger(__name__)
 
 
 def _activity_state(house_state: HouseState) -> dict:
@@ -64,16 +66,48 @@ def process_activities(
     state = _activity_state(house_state)
     log_state = _activity_log_state(house_state)
 
+    if not timer_app_instance.is_running:
+        return
+
+    now = timer_app_instance.get_simulated_time()
+    if "har_config" in runtime_sources:
+        # Real app sessions use the learned recognizer exclusively. The legacy
+        # detectors below remain available only to older standalone callers.
+        from har.runtime import process_frame
+
+        try:
+            result = process_frame(
+                sensor_states_store,
+                runtime_sources,
+                state,
+                timer_app_instance.elapsed_time.total_seconds() * 60,
+                house_state=house_state,
+            )
+        except (OSError, ValueError) as error:
+            logger.warning("Learned activity recognition unavailable: %s", error)
+            result = {
+                "activities": [],
+                "probabilities": {},
+                "confidence": None,
+                "status": "error",
+                "abstained": True,
+                "message": f"Recognition unavailable: {error}",
+            }
+        state["har_prediction"] = result
+        detected = result.get("activities", []) if (
+            result.get("status") == "ready" and not result.get("abstained")
+        ) else []
+        update_activity_state(now, detected, None, state, log_state)
+        if activity_label is not None:
+            activity_label.config(text=_learned_activity_text(result))
+        return
+
     p_points = runtime_sources["points"]
     d_devices = runtime_sources["devices"]
     s_sensors = runtime_sources["sensors"]
     walls = runtime_sources["walls"]
     d_doors = runtime_sources["doors"]
 
-    if not timer_app_instance.is_running:
-        return
-
-    now = timer_app_instance.get_simulated_time()
     detected = set()
 
     avatar_presence, presence_activity = _presence_from_avatar(
@@ -161,6 +195,22 @@ def process_activities(
             detected.add(act)
 
     update_activity_state(now, detected, activity_label, state, log_state)
+
+
+def _learned_activity_text(result):
+    status = result.get("status")
+    if status == "ready" and not result.get("abstained"):
+        activities = ", ".join(sorted(result.get("activities", []))) or "None"
+        text = "Activities (ML): " + activities
+        confidence = result.get("confidence")
+        if confidence is not None:
+            text += f" · model confidence {confidence:.0%} (uncalibrated)"
+        return text
+    if status == "no_model":
+        return "Activity recognition: no trained model · record labelled examples and train a model"
+    if status == "uncertain" or (result.get("abstained") and status != "error"):
+        return "Activity recognition: uncertain · " + result.get("message", "no confident prediction")
+    return "Activity recognition: " + result.get("message", "model unavailable")
 
 
 def _cancel_activity_monitor(state):

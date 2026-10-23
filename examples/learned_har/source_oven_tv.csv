@@ -1,0 +1,49 @@
+Positions
+a,60,60
+b,390,60
+c,720,60
+d,720,420
+e,390,420
+f,60,420
+g,390,230
+h,390,290
+
+Walls
+a,b
+b,c
+c,d
+d,e
+e,f
+f,a
+b,g
+h,e
+
+Sensors
+source_kitchen_power,260,160,Smart Meter,0.0,2000.0,1.0,0.0,None,0.0,source_oven
+source_kitchen_motion,160,230,PIR,0.0,1.0,1.0,0.0,315,None,
+source_living_power,630,160,Smart Meter,0.0,140.0,1.0,0.0,None,0.0,source_tv
+source_living_motion,530,230,PIR,0.0,1.0,1.0,0.0,315,None,
+
+Devices
+source_oven,200,160,Oven,2000.0,0,1500.0,2000.0,0.0,1
+source_tv,570,160,TV,140.0,0,140.0,140.0,0.0,1
+
+Light Switches
+
+Doors
+390,230,390,290,open
+
+Rooms
+room-0ee767da18,Living room
+room-4b45ba0689,Kitchen
+
+HAR metadata
+config,"{""house_id"": ""demo-source"", ""house_label"": ""Demo: Oven / TV"", ""model_id"": null}"
+
+HAR categories
+device,source_oven,"[""DeviceCooking""]"
+device,source_tv,"[""DeviceEntertainment""]"
+sensor,source_kitchen_power,"[""SensorPower""]"
+sensor,source_kitchen_motion,"[""SensorPresence""]"
+sensor,source_living_power,"[""SensorPower""]"
+sensor,source_living_motion,"[""SensorPresence""]"

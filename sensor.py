@@ -2387,9 +2387,17 @@ def compute_smartmeter_consumption(sensor, devices, delta_seconds, current_datet
             # Fallback only if no LLM profile exists for this appliance type.
             if dev_state == 1:
                 cycles_ref = active_cycles_store if isinstance(active_cycles_store, dict) else {}
-                new_consumption = get_device_consumption(
-                    dev_name, dev_type, current_datetime, cycles_ref, dev_state
-                )
+                if dev_type in consumption_profiles:
+                    new_consumption = get_device_consumption(
+                        dev_name, dev_type, current_datetime, cycles_ref, dev_state
+                    )
+                else:
+                    # New object types have a simple simulated constant load
+                    # until a dedicated consumption profile is provided.
+                    # Actual replay, hardware, LLM and light readings take
+                    # their existing branches before this generic fallback.
+                    current = float(associated_dev.current_consumption or 0.0)
+                    new_consumption = current if current > 0 else max(0.0, float(associated_dev.power))
             else:
                 new_consumption = 0.0
 

@@ -57,6 +57,30 @@ The main simulation workflows are available from the `Simulation` menu:
 - `Automatic` for replaying activity and sensor data;
 - `LLM Smart Meter` for extracting and reusing appliance consumption cycles.
 
+## Learned Activity Recognition Across Houses
+
+Open **Scenario > Learned activity recognition…** to assign shared object
+categories, record observations with human activity labels, and train a Random
+Forest on a source house. The same model can recognize activities in other
+houses through category-based measurements; there is no manual device-to-activity
+transfer rule. A category alone never starts an activity, and learned recognition
+requires an activated trained model.
+
+The window has three tabs: **Categories**, **Record sessions**, and **Train &
+evaluate**. Training uses at least three independent source simulations; target
+sessions are reserved for evaluation. **Add synthetic demo sessions** offers a
+scripted trial whose results do not measure accuracy on real people. Model vote
+confidence is uncalibrated and differs from measured test accuracy.
+
+Try the [source oven/TV scenario](examples/learned_har/source_oven_tv.csv) and
+[target microwave/console scenario](examples/learned_har/target_microwave_console.csv).
+Follow the [Italian click-by-click guide](docs/learned_har_it.md) for a demo,
+recording your own sessions, and preserving data. Shared categories, sessions,
+models and reports live under `har_data/`; scenario CSVs preserve house identity,
+custom categories and the selected model ID. Copy both when moving the project.
+
+## Editor And Simulation Controls
+
 Personal preferences are available from the `Settings` menu. They control the
 manual simulation's initial time, whether `saved.csv` or a selected scenario
 CSV is loaded at application startup, whether Manual mode is activated

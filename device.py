@@ -11,19 +11,34 @@ from canvas_zoom import event_to_logical, snap_logical_position, to_canvas, to_c
 
 devices = []
 
+# These are object types only. Their shared categories are defined separately
+# in har.catalogue; neither list assigns a recognized activity.
+DEVICE_TYPES = (
+    "Fridge", "Washing_Machine", "Oven", "Microwave", "Toaster",
+    "Coffee_Machine", "Computer", "TV", "PlayStation", "Dishwasher",
+    NORMAL_LIGHT, SMART_LIGHT, "Bed", "Sofa", "Chair", "Shower", "Sink", "Toilet",
+)
+
 
 def get_device_params(device_type):
+    """Default simulated watts; new appliances use a constant load, fixtures 0 W."""
     params = {
         "Fridge": {"power": 150, "min_consumption": 50,  "max_consumption": 150},
         "Washing_Machine":   {"power": 500, "min_consumption": 300, "max_consumption": 500},
         "Oven":       {"power": 2000, "min_consumption": 1500, "max_consumption": 2000},
+        "Microwave": {"power": 1000, "min_consumption": 1000, "max_consumption": 1000},
+        "Toaster": {"power": 900, "min_consumption": 900, "max_consumption": 900},
         "Coffee_Machine": {"power": 1000, "min_consumption": 100,  "max_consumption": 1300},
         "Computer":    {"power": 250, "min_consumption": 100, "max_consumption": 250},
+        "TV": {"power": 100, "min_consumption": 100, "max_consumption": 100},
+        "PlayStation": {"power": 200, "min_consumption": 200, "max_consumption": 200},
         "Dishwasher": {"power": 1800, "min_consumption": 1000, "max_consumption": 1600},
         "Lighting": {"power": 10, "min_consumption": 10, "max_consumption": 10},
         NORMAL_LIGHT: {"power": 10, "min_consumption": 10, "max_consumption": 10},
         SMART_LIGHT: {"power": 10, "min_consumption": 10, "max_consumption": 10},
     }
+    if device_type in ("Bed", "Sofa", "Chair", "Shower", "Sink", "Toilet"):
+        return {"power": 0, "min_consumption": 0, "max_consumption": 0}
     return params.get(device_type, {"power": 100, "min_consumption": 50, "max_consumption": 100})
 
 
@@ -34,8 +49,7 @@ class DeviceDialog(simpledialog.Dialog):
         tk.Label(master, text="Device type:").grid(row=1)
         self.device_name = tk.Entry(master)
         self.device_name.grid(row=0, column=1)
-        self.device_type = ttk.Combobox(master, values=[
-            "Fridge", "Washing_Machine", "Oven", "Coffee_Machine", "Computer", "Dishwasher", NORMAL_LIGHT, SMART_LIGHT])
+        self.device_type = ttk.Combobox(master, values=DEVICE_TYPES)
         self.device_type.grid(row=1, column=1)
         self.device_type.current(0)
         self.lighting_power_label = tk.Label(master, text="Lighting power (W):")
