@@ -117,9 +117,9 @@ def open_activity_recognition(ctx):
     window.minsize(820, 600)
     body = tk.Frame(window, padx=14, pady=12)
     body.pack(fill=tk.BOTH, expand=True)
-    tk.Label(body, text="Confidence combines rule support and available evidence; inferred activities receive a penalty. It is not a calibrated probability.",
+    tk.Label(body, text="Observed objects must match a known reference role. Confidence combines that match, sensor evidence and rule support; it is uncalibrated.",
              anchor="w", wraplength=1000).pack(fill=tk.X)
-    tk.Label(body, text="Cooking → relaxing infers eating while relaxing. Sleep requires bedroom presence, bed weight, all lights OFF and zero light power.",
+    tk.Label(body, text="Double-click an activity to inspect reference matches. Eating while relaxing groups concurrent eating and relaxing; both stay active separately. Sleep also requires bedroom, bed-weight and lighting evidence.",
              anchor="w", wraplength=1000).pack(fill=tk.X, pady=(4, 10))
     tree = ttk.Treeview(body, columns=("score", "confidence", "status", "evidence", "sensors"), height=12)
     tree.heading("#0", text="Activity")
@@ -129,6 +129,42 @@ def open_activity_recognition(ctx):
         tree.heading(name, text=title)
         tree.column(name, width=width)
     tree.pack(fill=tk.BOTH, expand=True)
+
+    def show_details(_event=None):
+        selected = tree.selection()
+        if not selected:
+            return None
+        name = selected[0]
+        result = ctx.house_state.activity_state().get("recognition_results", {}).get(name, {})
+        details = tk.Toplevel(window)
+        details.title(f"Recognition explanation: {name}")
+        text = tk.Text(details, width=110, height=22, wrap=tk.WORD, padx=12, pady=12)
+        text.pack(fill=tk.BOTH, expand=True)
+        text.insert(tk.END, f"Activity: {name}\nMethod: reference-role substitution\n")
+        text.insert(tk.END, f"Support: {result.get('score', 0):.0%}\nConfidence (uncalibrated): {result.get('confidence', 0):.0%}\n")
+        text.insert(tk.END, f"Sensor/context sources: {', '.join(result.get('sources', [])) or 'None'}\n\n")
+        if result.get("components"):
+            text.insert(tk.END, "Concurrent activities: " + ", ".join(result["components"]) + "\n")
+            if result.get("missing_components"):
+                text.insert(tk.END, "Activities not recognized: " + ", ".join(result["missing_components"]) + "\n")
+            text.insert(tk.END, "\n")
+        from reference_transfer import explain_match
+        matches = result.get("reference_matches", [])
+        for match in matches:
+            text.insert(tk.END, explain_match(match) + "\n")
+            text.insert(tk.END, f"  Reference rule: {match['binding_id']}\n  Source house: {match.get('reference_house_id') or 'Built-in reference catalogue'}\n"
+                        f"  Observation: {match['sensor']} · Evidence strength: {match['observed_strength']:.0%}\n\n")
+        if not matches:
+            text.insert(tk.END, "No matched reference objects. Context-only conditions may still be available.\n")
+        if result.get("missing"):
+            text.insert(tk.END, "Missing evidence: " + ", ".join(result["missing"]) + "\n")
+        text.configure(state="disabled")
+        tk.Button(details, text="Close", command=details.destroy).pack(anchor="e", padx=12, pady=8)
+        details._explanation_text = text
+        apply_theme_tree(details, "light")
+        return details
+
+    tree.bind("<Double-1>", show_details)
     editor = tk.LabelFrame(body, text="Activity rules · changes are saved with the house", padx=10, pady=10)
     editor.pack(fill=tk.X, pady=10)
     editor.columnconfigure(1, weight=1)
@@ -193,7 +229,11 @@ def open_activity_recognition(ctx):
     def open_shared():
         from app.ui.recognition_library_ui import open_recognition_library
         open_recognition_library(ctx)
-    tk.Button(actions, text="Shared library / transfer / accuracy…", command=open_shared).pack(side=tk.LEFT, padx=8)
+    tk.Button(actions, text="Shared library…", command=open_shared).pack(side=tk.LEFT, padx=8)
+    def open_references():
+        from app.ui.reference_rules import open_reference_rules
+        open_reference_rules(ctx)
+    tk.Button(actions, text="Reference device rules…", command=open_references).pack(side=tk.LEFT, padx=(0, 8))
     def use_shared_rule():
         name = entries["name"].get()
         ctx.recognition_config.get("rules", {}).pop(name, None)
@@ -218,8 +258,14 @@ def open_activity_recognition(ctx):
             if result.get("active") and result.get("inferred"):
                 state = "Inferred"
             evidence = "; ".join(result.get("evidence", []))
+            from reference_transfer import explain_match
+            substitutions = [item for item in result.get("reference_matches", []) if item["kind"] == "device"]
+            if substitutions:
+                evidence += " | " + "; ".join(explain_match(item) for item in substitutions)
             if result.get("missing"):
                 evidence += " | Needs: " + ", ".join(result["missing"])
+            if result.get("missing_components"):
+                evidence += " | Needs recognized activities: " + ", ".join(result["missing_components"])
             if result.get("suppressed_by"):
                 state = "Included"
                 evidence += " | Included in: " + result["suppressed_by"]
@@ -242,6 +288,7 @@ def open_activity_recognition(ctx):
     window.bind("<Destroy>", close, add="+")
     window._recognition_entries = entries
     window._recognition_tree = tree
+    window._open_reference_details = show_details
     refresh()
     apply_theme_tree(window, "light")
     return window

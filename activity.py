@@ -135,7 +135,8 @@ def process_activities(
         state["recognition_error"] = str(error)
     from recognition_evaluation import capture_frame, record_trace
     record_trace(state, capture_frame(recognition_runtime, sensor_states_store,
-                                     timer_app_instance.elapsed_time.total_seconds(), person_inside=person_inside))
+                                     timer_app_instance.elapsed_time.total_seconds(), person_inside=person_inside,
+                                     simulated_time=now))
 
     update_activity_state(now, detected, activity_label, state, log_state)
     if activity_label and state.get("recognition_error"):
@@ -182,7 +183,7 @@ def update_activity_state(current_time, detected_activities, activity_label, sta
     current_activities = state["current_activities"]
     activity_sessions = state["activity_sessions"]
 
-    for act in detected_activities:
+    for act in sorted(detected_activities):
         if act not in current_activities:
             current_activities[act] = current_time
             log_activity_start(act, current_time, log_state)

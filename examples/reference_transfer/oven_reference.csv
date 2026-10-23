@@ -1,0 +1,32 @@
+Positions
+a,0,0
+b,240,0
+c,240,200
+d,0,200
+
+Walls
+a,b
+b,c
+c,d
+d,a
+
+Sensors
+presence,70,100,PIR,0,1,1,0,90,None,None
+power_meter,120,100,Smart Meter,0,3000,1,0,None,None,reference_oven
+
+Devices
+reference_oven,120,100,Oven,1000,0,100,1000,0,1
+
+Doors
+60,0,110,0,close
+
+Properties
+device,reference_oven,heats_food,1
+device,reference_oven,food_preparation,1
+device,reference_oven,bakes,1
+
+Property Profiles
+device,reference_oven,local
+
+Activity Recognition
+"{""minimum_confidence"": 0.5, ""reference_bindings"": {""known_oven_cooking"": {""feature"": ""cooking"", ""kind"": ""device"", ""reference"": {""name"": ""reference_oven"", ""type"": ""Oven"", ""properties"": {""heats_food"": 1, ""food_preparation"": 1, ""bakes"": 1}, ""recognition_weight"": 1, ""house_id"": null}, ""property_weights"": {""heats_food"": 0.6, ""food_preparation"": 0.4}, ""required_properties"": [""food_preparation""], ""minimum_similarity"": 0.5, ""strength"": 1, ""weight"": 1}, ""known_presence_sensor"": {""feature"": ""presence"", ""kind"": ""sensor"", ""reference"": {""name"": ""PIR"", ""type"": ""PIR"", ""properties"": {""presence"": 1}, ""recognition_weight"": 1, ""house_id"": null}, ""property_weights"": {""presence"": 1}, ""required_properties"": [""presence""], ""minimum_similarity"": 0.5, ""strength"": 1, ""weight"": 1}}}"

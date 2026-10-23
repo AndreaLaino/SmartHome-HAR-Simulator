@@ -60,7 +60,6 @@ DEVICE_PROPERTIES = {
     "Vacuum_Cleaner": {"cleaning": 1},
     "Kettle": {"drink_preparation": 1, "heating": .8},
     "Toaster": {"cooking": 1},
-    "rice cooker": {"cooking": 1},
     "Shower": {"showering": 1, "hygiene": 1},
     "Toilet": {"toileting": 1, "hygiene": .8},
     "Sink": {"washing_hands": 1, "hygiene": .8},

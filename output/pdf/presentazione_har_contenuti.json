@@ -1,0 +1,295 @@
+[
+  {
+    "section": "GUIDA VISIVA · 21 OTTOBRE 2026",
+    "title": "Attività, proprietà\ne trasferimento",
+    "layout": "hero",
+    "image": "immagini/forno_microonde.png",
+    "lead": "Dal forno al microonde,\nun passaggio alla volta",
+    "body": "Prima capiamo il riconoscimento attuale.\nPoi lo proviamo nell’app.\nInfine vediamo l’esperimento con ML.",
+    "takeaway": "Le immagini sono illustrazioni concettuali. I nomi dei menu sono quelli del progetto.",
+    "source": "SmartHome-HAR-Simulator · guida alla versione locale"
+  },
+  {
+    "section": "01 · LE IDEE",
+    "title": "Due parti diverse del progetto",
+    "layout": "columns",
+    "columns": [
+      {"heading": "Simulazione quotidiana", "body": "Legge sensori, proprietà e contesto.\n\nApplica regole e associazioni configurate.\n\nProduce attività e activity log.", "label": "NESSUN ADDESTRAMENTO ML"},
+      {"heading": "Esperimento separato", "body": "Confronta regole e classificatori addestrati.\n\nImpara dagli esempi della casa sorgente.\n\nMisura i risultati su altre sessioni e case.", "label": "QUI C’È ANCHE MACHINE LEARNING"}
+    ],
+    "takeaway": "Eseguire un esperimento ML non sostituisce il motore del normale activity log.",
+    "source": "activity_recognition.py · har_experiment.py · app/ui/har_experiment.py"
+  },
+  {
+    "section": "01 · LE IDEE",
+    "title": "Capacità e uso del dispositivo",
+    "layout": "table",
+    "headers": ["Informazione", "Esempio", "Che cosa significa"],
+    "widths": [0.25, 0.31, 0.44],
+    "rows": [
+      ["Proprietà", "heats_food = 1", "Può riscaldare cibo.\nLo specifichi tu nel modello."],
+      ["Osservazione", "Smart Meter attivo", "Il dispositivo sta consumando\npotenza in questo momento."],
+      ["Associazione nota", "Forno associato a cooking", "Configura il ruolo che il sistema\npuò trasferire ad altri oggetti."],
+      ["Riconoscimento", "cooking", "È la conclusione della regola,\ncon evidenze e confidenza."]
+    ],
+    "takeaway": "Un microonde spento conserva le proprietà, ma non dimostra che qualcuno stia cucinando.",
+    "source": "device_properties.py · reference_transfer.py · activity_recognition.py"
+  },
+  {
+    "section": "01 · LE IDEE",
+    "title": "Il trasferimento che usiamo ora",
+    "layout": "steps",
+    "steps": [
+      {"title": "Definisci il caso conosciuto", "body": "L’uso del forno può fornire evidenza per il ruolo cooking."},
+      {"title": "Descrivi il microonde", "body": "Gli assegni capacità fisiche, per esempio heats_food e food_preparation."},
+      {"title": "Il programma confronta le proprietà rilevanti", "body": "Se corrispondono abbastanza, il microonde può sostituire il forno in quel ruolo."},
+      {"title": "Il sensore osserva l’uso", "body": "La regola combina quell’evidenza con pesi, soglie e contesto."}
+    ],
+    "takeaway": "L’associazione forno-cooking è configurata. Il programma non la scopre autonomamente dai dati.",
+    "source": "reference_transfer.py · examples/reference_transfer/README.md"
+  },
+  {
+    "section": "01 · LE IDEE",
+    "title": "Un esempio di similarità pesata",
+    "layout": "table",
+    "headers": ["Proprietà rilevante", "Peso", "Forno", "Microonde"],
+    "widths": [0.43, 0.17, 0.2, 0.2],
+    "rows": [
+      ["heats_food", "0,60", "1", "1"],
+      ["food_preparation", "0,40", "1", "1"],
+      ["bakes / defrosts", "Escluse", "bakes", "defrosts"]
+    ],
+    "after": "In questo esempio la similarità rilevante è 100%.\nLe capacità extra differenti non annullano il confronto.",
+    "takeaway": "100% di similarità non significa 100% di accuratezza nel riconoscere una persona che cucina.",
+    "source": "examples/reference_transfer/microwave_target.csv · reference_transfer.property_similarity"
+  },
+  {
+    "section": "01 · LE IDEE",
+    "title": "Il passaggio in più ha uno scopo",
+    "layout": "columns",
+    "columns": [
+      {"heading": "Regola diretta sulle proprietà", "body": "L’attività dipende direttamente dalle proprietà previste dalla regola.\n\nPer esempio, una proprietà cooking può contribuire direttamente a cooking.", "label": "PROPRIETÀ GIÀ LEGATA ALL’ATTIVITÀ"},
+      {"heading": "Associazione di riferimento", "body": "Conserva il caso noto del forno.\n\nConfronta le capacità del microonde e spiega quale riferimento sta sostituendo e perché.", "label": "CONFRONTO CON UN CASO NOTO"}
+    ],
+    "takeaway": "Entrambi richiedono conoscenza configurata. Il riferimento rende esplicita e verificabile la sostituzione.",
+    "source": "activity_recognition.py · reference_transfer.py · docs/inventario_modifiche_it.md"
+  },
+  {
+    "section": "01 · LE IDEE",
+    "title": "Attività contemporanee",
+    "layout": "hero",
+    "image": "immagini/attivita_contemporanee.png",
+    "lead": "Eating + relaxing",
+    "body": "Eating può essere inferita dopo cooking, con presenza e una finestra temporale.\n\nRelaxing richiede le proprie evidenze, per esempio l’uso della TV.",
+    "takeaway": "Se entrambe sono riconosciute, si aggiunge eating while relaxing. Le due attività di base restano visibili.",
+    "source": "activity_recognition.py · ACTIVITY_COMPONENTS · l’inferenza di eating è un’ipotesi, non una misura del pasto"
+  },
+  {
+    "section": "01 · LE IDEE",
+    "title": "Tre numeri con significati diversi",
+    "layout": "table",
+    "headers": ["Numero", "Domanda a cui risponde", "Da dove viene"],
+    "widths": [0.23, 0.43, 0.34],
+    "rows": [
+      ["Similarità", "Quanto il microonde copre le\nproprietà rilevanti del forno?", "Confronto pesato\ntra proprietà."],
+      ["Confidenza", "Quanto il sistema sostiene\nquesta decisione?", "Pesi, evidenze, copertura\ne soglie del metodo."],
+      ["Accuratezza", "Quante decisioni coincidono\ncon le etichette corrette?", "Confronto con esempi\netichettati, tenuti da parte."]
+    ],
+    "after": "Una confidenza dell’80% non dimostra che il sistema sia corretto nell’80% dei casi.",
+    "takeaway": "Nel report sperimentale le prestazioni sono misurate sul dataset scelto. Nel log vedi decisioni del motore a regole.",
+    "source": "reference_transfer.py · recognition_evaluation.py · har_metrics.py"
+  },
+  {
+    "section": "01 · LE IDEE",
+    "title": "Una libreria comune per le case",
+    "layout": "columns",
+    "columns": [
+      {"heading": "Libreria condivisa", "body": "recognition_library/library.json\n\nContiene profili, regole, associazioni di riferimento e revisioni.\n\nÈ ancora usata dalle case collegate.", "label": "MODELLO COMUNE"},
+      {"heading": "Configurazione della casa", "body": "Contiene gli oggetti reali e può avere personalizzazioni locali.\n\nUna casa scollegata usa la propria configurazione.\n\nLe personalizzazioni possono prevalere sul modello comune.", "label": "OGGETTI E SCELTE LOCALI"}
+    ],
+    "takeaway": "La casa sorgente serve da riferimento. Non occorre salvare tutte le case dentro un’unica “casa principale”.",
+    "source": "recognition_library.py · app/ui/recognition_library_ui.py"
+  },
+  {
+    "section": "02 · LA PRIMA PROVA",
+    "title": "La prova più piccola possibile",
+    "layout": "columns",
+    "columns": [
+      {"heading": "Casa del forno", "body": "oven_reference.csv\n\nContiene reference_oven.\n\nMostra il caso conosciuto: uso del forno e riconoscimento di cooking.", "label": "RIFERIMENTO"},
+      {"heading": "Casa del microonde", "body": "microwave_target.csv\n\nContiene target_microwave.\n\nMostra la sostituzione del forno attraverso proprietà fisiche condivise.", "label": "TRASFERIMENTO"}
+    ],
+    "takeaway": "Iniziamo dal microonde. Questi esempi includono regole locali e funzionano senza modificare la libreria globale.",
+    "source": "Cartella del progetto: examples/reference_transfer/"
+  },
+  {
+    "section": "02 · LA PRIMA PROVA · PASSO 1",
+    "title": "Apertura del microonde",
+    "layout": "steps",
+    "steps": [
+      {"title": "Nel simulatore: File, poi Open file", "body": "Si apre la finestra di scelta del file."},
+      {"title": "Su Mac premi Cmd + Maiusc + G", "body": "Incolla il percorso della cartella mostrato qui sotto e premi Invio."},
+      {"title": "Seleziona microwave_target.csv", "body": "Conferma l’apertura. Nella mappa cerca il dispositivo target_microwave."}
+    ],
+    "path": "/Users/andrealaino/Desktop/SmartHome-HAR-Simulator/examples/reference_transfer/",
+    "takeaway": "Se appare una richiesta sulle modifiche non salvate, salva un’eventuale casa a cui stavi lavorando prima di aprire l’esempio.",
+    "source": "app/ui/main_ui.py · examples/reference_transfer/microwave_target.csv"
+  },
+  {
+    "section": "02 · LA PRIMA PROVA · PASSO 2",
+    "title": "Avvio e accensione",
+    "layout": "steps",
+    "steps": [
+      {"title": "Simulation, poi Manual", "body": "Appaiono i comandi del timer."},
+      {"title": "Premi Start", "body": "Il tempo della simulazione comincia a scorrere."},
+      {"title": "Un clic sinistro sul simbolo di target_microwave", "body": "Clicca il centro del dispositivo. Il suo simbolo deve diventare verde."},
+      {"title": "Attendi qualche secondo", "body": "Il misuratore osserva la potenza e il riconoscimento viene aggiornato."}
+    ],
+    "takeaway": "In Manual il clic sposta anche l’avatar. Un secondo clic sul dispositivo lo spegne. Le luci hanno comandi propri.",
+    "source": "app/controllers/simulation.py · sim._handle_device_toggle_at_click · sim.toggle_device_state"
+  },
+  {
+    "section": "02 · LA PRIMA PROVA · PASSO 3",
+    "title": "La spiegazione della decisione",
+    "layout": "steps",
+    "steps": [
+      {"title": "Scenario, poi Activity recognition…", "body": "Cerca cooking nella tabella e controlla stato, evidenze e confidenza."},
+      {"title": "Doppio clic sulla riga cooking", "body": "Leggi il riferimento forno, il target microonde, le proprietà confrontate e il sensore osservatore."},
+      {"title": "Simulation, poi Activity Log", "body": "Controlla l’intervallo cooking. Se è ancora attivo, il termine è In progress."}
+    ],
+    "takeaway": "Aprire il log non termina l’attività. Spegnere il dispositivo permette di osservare il cambiamento alla prossima lettura.",
+    "source": "app/ui/activity_properties.py · log.py · reference_transfer.explain_match"
+  },
+  {
+    "section": "02 · LA PRIMA PROVA · CONTROLLO FACOLTATIVO",
+    "title": "Il controllo sull’associazione nota",
+    "layout": "steps",
+    "steps": [
+      {"title": "Nella finestra Activity recognition", "body": "Premi Reference device rules…"},
+      {"title": "Seleziona known_oven_cooking", "body": "Premi Delete reference rule. In questo esempio modifichi il catalogo locale."},
+      {"title": "Lascia il microonde acceso", "body": "Alla successiva osservazione cooking non deve più essere sostenuta da quell’associazione."},
+      {"title": "Per ripristinare: Reset e riapertura del file", "body": "Riapri microwave_target.csv con File / Open file. Non sovrascrivere l’esempio."}
+    ],
+    "takeaway": "Le proprietà sono rimaste uguali. Hai rimosso il collegamento noto che permetteva il trasferimento.",
+    "source": "examples/reference_transfer/README.md · app/ui/reference_rules.py"
+  },
+  {
+    "section": "02 · UN SECONDO ESERCIZIO FACOLTATIVO",
+    "title": "Dal cucinare al rilassarsi",
+    "layout": "steps",
+    "steps": [
+      {"title": "Apri examples/semantic_activities/oven_tv.csv", "body": "Avvia di nuovo Simulation / Manual e Start."},
+      {"title": "Accendi il forno, poi spegnilo", "body": "Lascia passare qualche osservazione mentre è acceso, così cooking viene registrata."},
+      {"title": "Accendi la TV e resta nel suo ambiente", "body": "Controlla le evidenze di presenza e relaxing in Activity recognition…"},
+      {"title": "Osserva le attività di base e quella composta", "body": "Se eating e relaxing superano le soglie, vedrai anche eating while relaxing."}
+    ],
+    "takeaway": "Eating è una deduzione dopo cooking con finestra temporale. Non è la conferma che il pasto sia realmente avvenuto.",
+    "source": "examples/semantic_activities/oven_tv.csv · activity_recognition.py"
+  },
+  {
+    "section": "03 · L’ESPERIMENTO ML",
+    "title": "Imparare dagli esempi",
+    "layout": "hero",
+    "image": "immagini/esperimento_case.png",
+    "lead": "Un esperimento separato",
+    "body": "Gli esempi etichettati della casa sorgente servono ad addestrare i classificatori.\n\nLe altre case servono a verificare il trasferimento.",
+    "takeaway": "Il modello semantico riceve ruoli già costruiti dalle associazioni. Non impara da zero che il microonde serve a cucinare.",
+    "source": "har_features.py · har_classifier.py · har_experiment.py"
+  },
+  {
+    "section": "03 · L’ESPERIMENTO ML",
+    "title": "I quattro metodi a confronto",
+    "layout": "table",
+    "headers": ["Metodo", "Che cosa usa", "Impara dai dati?"],
+    "widths": [0.28, 0.52, 0.2],
+    "rows": [
+      ["Reference transfer", "Associazioni note, similarità\ne regole sulle evidenze.", "No"],
+      ["Direct property rules", "Proprietà collegate direttamente\nalle attività previste dalle regole.", "No"],
+      ["Semantic Random Forest", "Storia recente dei ruoli già ricavati\ntramite le associazioni.", "Sì"],
+      ["Raw-ID Random Forest", "Segnali e identificativi specifici\ndei dispositivi della casa sorgente.", "Sì"]
+    ],
+    "takeaway": "Sono confronti controllati. Nessun risultato dimostra che un metodo sia sempre migliore per ogni casa reale.",
+    "source": "har_experiment.py · har_features.py · har_classifier.py"
+  },
+  {
+    "section": "03 · LA PROVA ML · PASSO 1",
+    "title": "Esecuzione della demo",
+    "layout": "steps",
+    "steps": [
+      {"title": "Scenario, poi Source / target experiment…", "body": "Puoi aprirlo senza registrare nuove case o raccogliere dati a mano."},
+      {"title": "Lascia Data source sulla Demo", "body": "La voce completa è Demo — scripted synthetic ground truth."},
+      {"title": "Mantieni i valori iniziali", "body": "Random seed 42; Window 10; Demo sessions / house 20; certezza minima 0.5."},
+      {"title": "Premi Run experiment", "body": "Attendi il completamento. La demo costruisce case ed esempi sintetici per il confronto."}
+    ],
+    "takeaway": "Lascia inizialmente attivo Cooking requires kitchen presence e disattivo Use time of day as a feature.",
+    "source": "app/ui/har_experiment.py · har_benchmark.py"
+  },
+  {
+    "section": "03 · LA PROVA ML · PASSO 2",
+    "title": "Lettura dei risultati",
+    "layout": "table",
+    "headers": ["Colonna", "Come leggerla"],
+    "widths": [0.32, 0.68],
+    "rows": [
+      ["Source / Target", "Sorgente: stessa casa, sessioni tenute da parte.\nTarget: case diverse dalla sorgente."],
+      ["Exact", "Percentuale di osservazioni con l’intero insieme\ndi attività previsto esattamente corretto."],
+      ["Micro / Macro F1", "Valutano anche attività mancate e falsi allarmi.\nMicro aggrega le decisioni; macro media tra attività."],
+      ["Coverage", "Percentuale di osservazioni su cui il metodo\naccetta di decidere, senza astenersi."]
+    ],
+    "takeaway": "Nella Demo le etichette vengono da uno script. Punteggi alti descrivono quella prova sintetica, non persone reali.",
+    "source": "app/ui/har_experiment.py · har_metrics.py · har_benchmark.py"
+  },
+  {
+    "section": "03 · LA PROVA ML · PASSO 3",
+    "title": "Il report da conservare",
+    "layout": "steps",
+    "steps": [
+      {"title": "A fine esperimento: Copy results folder", "body": "Copia il percorso della cartella di quella esecuzione."},
+      {"title": "Nel Finder: Cmd + Maiusc + G", "body": "Incolla il percorso e premi Invio. Apri report.html nel browser."},
+      {"title": "Controlla dati, divisione e limiti", "body": "Con 20 sessioni sorgente: 12 per addestrare, 4 per validare, 4 per il test sorgente. Le 20 target restano test."},
+      {"title": "Per confrontare una modifica", "body": "Ripeti cambiando un solo parametro, per esempio il requisito di presenza in cucina."}
+    ],
+    "takeaway": "Ogni esecuzione ha una cartella propria in recognition_library/reports/experiments/.",
+    "source": "har_experiment.py · app/ui/har_experiment.py"
+  },
+  {
+    "section": "04 · DOPO LA DEMO · FACOLTATIVO",
+    "title": "Esperimenti sulle tue case",
+    "layout": "steps",
+    "steps": [
+      {"title": "Registra case distinte nella libreria condivisa", "body": "Scenario / Shared recognition library…; usa Register as a new house per una nuova identità."},
+      {"title": "Raccogli sessioni ed etichette", "body": "In Accuracy / ground truth scegli le attività vere e premi Record human-labelled frame."},
+      {"title": "Ripeti su sorgente e target", "body": "L’etichetta riguarda l’osservazione corrente. Per sessioni indipendenti usa Reset e un nuovo avvio. Servono almeno 5 sessioni sorgente."},
+      {"title": "Scegli Registered human-labelled datasets", "body": "Nella finestra degli esperimenti, esegui il confronto sui dati registrati."}
+    ],
+    "takeaway": "Le etichette sono una valutazione separata. Una previsione del sistema non diventa automaticamente la verità corretta.",
+    "source": "app/ui/recognition_library_ui.py · recognition_evaluation.py · har_experiment.py"
+  },
+  {
+    "section": "PROMEMORIA",
+    "title": "I tre percorsi da ricordare",
+    "layout": "table",
+    "headers": ["Obiettivo", "Dove cliccare"],
+    "widths": [0.34, 0.66],
+    "rows": [
+      ["Capire una decisione", "Scenario / Activity recognition…\nPoi doppio clic sull’attività."],
+      ["Vedere inizio e fine", "Simulation / Activity Log\nIn progress indica un’attività ancora aperta."],
+      ["Provare il ML", "Scenario / Source / target experiment…\nDemo, poi Run experiment."]
+    ],
+    "after": "Per cominciare basta la prima prova: microonde acceso,\ncooking riconosciuta, spiegazione del riferimento forno.",
+    "takeaway": "Se il dispositivo non diventa verde: verifica Manual, Start e il clic sul centro del simbolo.",
+    "source": "Menu verificati in app/ui/main_ui.py · nessuna schermata dell’app è riprodotta in questa guida"
+  },
+  {
+    "section": "RIFERIMENTI DELLA GUIDA",
+    "title": "Codice, esempi e immagini",
+    "layout": "plain",
+    "blocks": [
+      {"heading": "Riconoscimento e trasferimento", "body": "activity_recognition.py · reference_transfer.py · device_properties.py\nrecognition_library.py · recognition_evaluation.py"},
+      {"heading": "Esperimenti", "body": "har_experiment.py · har_features.py · har_classifier.py · har_metrics.py\nhar_benchmark.py · app/ui/har_experiment.py"},
+      {"heading": "Prove e approfondimenti", "body": "examples/reference_transfer/README.md · examples/semantic_activities/\ndocs/inventario_modifiche_it.md · README.md"},
+      {"heading": "Materiale visivo", "body": "Tre illustrazioni originali generate con ImageGen per questa guida.\nSono esempi concettuali, non fotografie né schermate del simulatore."}
+    ],
+    "takeaway": "Contenuti verificati sul codice locale del progetto il 21 ottobre 2026. La guida non introduce modifiche al motore.",
+    "source": "SmartHome-HAR-Simulator · presentazione didattica in italiano"
+  }
+]

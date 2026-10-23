@@ -102,13 +102,64 @@ def log_end_of_simulation(end_time, log_state):
         print(f"[LOG] Force close activity: {name} at {end_time}")
     state["active_activities"].clear()
 
+def activity_log_entries(log_state):
+    """Return completed and open intervals without ending a running activity."""
+    state = _activity_log_state(log_state)
+    entries = [*state["activity_log"],
+               *({"activity": name, "start": start, "end": None}
+                 for name, start in state["active_activities"].items())]
+    return _compact_activity_log(entries)
+
+
+def activity_log_text(log_state):
+    entries = activity_log_entries(log_state)
+    if not entries:
+        return "No activity recorded.\n"
+    lines = []
+    for index, entry in enumerate(entries, 1):
+        end = entry["end"] if entry["end"] is not None else "In progress"
+        lines.extend((f"Activity {index}:", f"  Name:  {entry['activity']}",
+                      f"  Start: {entry['start']}", f"  End:   {end}", "-" * 60))
+    return "\n".join(lines) + "\n"
+
+
+def _install_activity_log_view(window, text_box, state):
+    """Refresh either activity-log view on Tk's thread, including open intervals."""
+    job = None
+    previous_text = None
+
+    def refresh():
+        nonlocal job, previous_text
+        job = None
+        content = activity_log_text(state)
+        if content != previous_text:
+            position = text_box.yview()[0]
+            text_box.configure(state=tk.NORMAL)
+            text_box.delete("1.0", tk.END)
+            text_box.insert("1.0", content)
+            text_box.configure(state=tk.DISABLED)
+            text_box.yview_moveto(position)
+            previous_text = content
+        job = window.after(500, refresh)
+
+    def close(event):
+        nonlocal job
+        if event.widget is window and job is not None:
+            window.after_cancel(job)
+            job = None
+
+    window.bind("<Destroy>", close, add="+")
+    refresh()
+
+
 def save_activity_log(filename="activity_log.csv", log_state=None):
     state = _activity_log_state(log_state)
     try:
         with open(filename, mode="w", newline="", encoding="utf-8") as f:
             writer = csv.writer(f)
             writer.writerow(["activity", "start", "end"])
-            for entry in _compact_activity_log(state["activity_log"]):
+            # Empty end means the activity was still running at export.
+            for entry in activity_log_entries(state):
                 writer.writerow([entry["activity"], entry["start"], entry["end"]])
         print(f"[LOG] Activity log saved in '{filename}'")
     except Exception as e:
@@ -120,22 +171,14 @@ def show_activity_log(log_state):
     log_window.title("Activity log")
 
     tk.Label(log_window, text="Log of activities detected during the simulation").pack(pady=10)
-
-    text_box = tk.Text(log_window, height=20, width=80)
-    text_box.pack(pady=10)
-
-    compacted_log = _compact_activity_log(state["activity_log"])
-
-    if not compacted_log:
-        text_box.insert(tk.END, "No activity recorded.\n")
-    else:
-        # print activity list in vertical column format
-        for i, entry in enumerate(compacted_log, 1):
-            text_box.insert(tk.END, f"Activity {i}:\n")
-            text_box.insert(tk.END, f"  Name:  {entry['activity']}\n")
-            text_box.insert(tk.END, f"  Start: {entry['start']}\n")
-            text_box.insert(tk.END, f"  End:   {entry['end']}\n")
-            text_box.insert(tk.END, "-" * 60 + "\n")
+    content = tk.Frame(log_window)
+    content.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+    text_box = tk.Text(content, height=20, width=80)
+    text_box.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+    scrollbar = ttk.Scrollbar(content, orient=tk.VERTICAL, command=text_box.yview)
+    scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+    text_box.configure(yscrollcommand=scrollbar.set)
+    _install_activity_log_view(log_window, text_box, state)
 
     def save():
         session_dir = get_or_create_current_save_session(suffix="logs")
@@ -146,6 +189,8 @@ def show_activity_log(log_state):
 
     tk.Button(log_window, text="Save activity log", command=save).pack(pady=10)
     apply_theme_tree(log_window, get_widget_theme_mode(log_window))
+    log_window._activity_log_text = text_box
+    return log_window
 
 
 # sensor log
@@ -316,12 +361,7 @@ def show_log(
             text_box = tk.Text(act_frame, height=22, width=100)
             text_box.pack(padx=10, pady=(0, 8), fill="both", expand=True)
 
-            if not state["activity_log"]:
-                text_box.insert(tk.END, "No activity recorded.\n")
-            else:
-                text_box.insert(tk.END, "Activity\tStart\tEnd\n")
-                for entry in state["activity_log"]:
-                    text_box.insert(tk.END, f"{entry['activity']}\t{entry['start']}\t{entry['end']}\n")
+            _install_activity_log_view(win, text_box, state)
 
             def save_activity_log_tab():
                 saves_dir = ensure_saves_dir()

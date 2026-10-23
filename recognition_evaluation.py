@@ -5,10 +5,11 @@ import json
 import uuid
 
 import recognition_library as library
-from activity_recognition import collect_evidence, recognition_settings, recognize_activities
+from activity_recognition import ACTIVITY_COMPONENTS, collect_evidence, recognition_settings, recognize_activities
+from reference_transfer import match_reference_roles
 
 
-def capture_frame(runtime, sensor_states, now_minutes, *, person_inside=True):
+def capture_frame(runtime, sensor_states, now_minutes, *, person_inside=True, simulated_time=None):
     observations = {}
     for name, data in sensor_states.items():
         item = {key: copy.deepcopy(data[key]) for key in ("type", "associated_device") if key in data}
@@ -17,11 +18,14 @@ def capture_frame(runtime, sensor_states, now_minutes, *, person_inside=True):
             if values:
                 item[key] = [values[-1]]
         observations[name] = item
-    return {"time_minutes": float(now_minutes), "sensor_states": observations,
+    frame = {"time_minutes": float(now_minutes), "sensor_states": observations,
             "device_states": {obj.name: {"state": obj.state, "current_consumption": obj.current_consumption}
                               for obj in runtime.get("devices", [])},
             "door_states": [obj.state for obj in runtime.get("doors", [])],
             "avatar_position": copy.deepcopy(runtime.get("avatar_position")), "person_inside": bool(person_inside)}
+    if simulated_time is not None:
+        frame["simulated_time"] = str(simulated_time)
+    return frame
 
 
 def record_trace(state, frame):
@@ -47,6 +51,7 @@ def label_current_frame(ctx, expected_activities, *, partition="test"):
         raise ValueError("Start Manual simulation and make observations before labelling a frame.")
     expected = sorted(set(str(name).strip() for name in expected_activities if str(name).strip()))
     state = ctx.house_state.activity_state()
+    session_id = ctx.house_state.sim_state().setdefault("recognition_session_id", uuid.uuid4().hex)
     run_id = state.setdefault("validation_run_id", uuid.uuid4().hex)
     path = library.LIBRARY_DIR / "datasets" / f"{run_id}.json"
     runtime = library.context_runtime(ctx)
@@ -58,6 +63,7 @@ def label_current_frame(ctx, expected_activities, *, partition="test"):
             raise ValueError("House properties/model or partition changed. Reset simulation to start an independent run.")
     else:
         dataset = {"schema_version": 1, "run_id": run_id, "house_id": link["house_id"],
+                   "session_id": session_id, "ground_truth_provenance": "human-supplied frame labels",
                    "partition": partition, "house": snapshot, "house_signature": signature, "frames": []}
     # Unlabelled context establishes sequence order and sleep duration. It is
     # never treated as ground truth, or scored as a negative example.
@@ -141,6 +147,7 @@ def evaluate_datasets(datasets, config, *, reference_house_id=None, shared_libra
     fp = sum(item["fp"] for item in counts.values())
     fn = sum(item["fn"] for item in counts.values())
     return {"schema_version": 1, "model_fingerprint": library.model_fingerprint(settings),
+            "recognition_method": "reference-role substitution",
             "labelled_samples": total, "test_houses": len([item for item in house_counts.values() if item["samples"]]),
             "exact_match_accuracy": exact / total if total else None,
             "micro_f1": 2 * tp / (2 * tp + fp + fn) if 2 * tp + fp + fn else None,
@@ -157,7 +164,7 @@ def evaluate_library():
     return result
 
 
-def _potential_features(snapshot):
+def _potential_features(snapshot, settings, transfers=None):
     runtime = library.runtime_from_snapshot(snapshot)
     observations = {}
     for obj in runtime["devices"]:
@@ -166,10 +173,13 @@ def _potential_features(snapshot):
         observations[obj.name] = {"state": [max(1, obj.min_val + 1)]}
         if obj.type == "Smart Meter":
             observations[obj.name]["consumption"] = [1]
-    features, _signals, _power = collect_evidence(observations, runtime)
+    features, _signals, _power = collect_evidence(observations, runtime, settings=settings, transfers=transfers)
     features["recent_cooking"] = features.get("cooking", 0)
     features["cooking_then_relaxing"] = min(features.get("cooking", 0), features.get("relaxing", 0))
     # Coverage asks what the house can observe, not what is active concurrently.
+    # Local simulation can supply avatar presence during the later meal phase.
+    features["presence"] = 1.0
+    features["eating"] = max(features.get("eating", 0), .9 * features["recent_cooking"])
     from lighting import LIGHT_TYPES
     lights = any(obj.type in LIGHT_TYPES or obj.properties.get("lighting", 0) for obj in runtime["devices"])
     features["lights_off"] = features["light_power_zero"] = float(lights)
@@ -181,8 +191,9 @@ def _potential_features(snapshot):
 def transfer_report(reference, target, config):
     settings = recognition_settings(config)
     rules = settings["rules"]
-    source = _potential_features(reference) if reference else {}
-    features = _potential_features(target)
+    source = _potential_features(reference, settings) if reference else {}
+    target_transfers = {}
+    features = _potential_features(target, settings, target_transfers)
     activities = {}
     for name, rule in rules.items():
         weights = rule["weights"]
@@ -197,27 +208,47 @@ def transfer_report(reference, target, config):
         # reduce confidence at runtime. Inferred meals receive the same penalty.
         maximum_confidence = coverage * rule["weight"] * evidence_coverage * (.85 if name == "eating while relaxing" else 1)
         activities[name] = {"property_coverage": round(coverage, 4), "missing": missing,
+                            "reference_matches": [match for prop in weights for match in target_transfers.get(
+                                "cooking" if prop == "recent_cooking" else prop, {}).values()],
                             "maximum_confidence": round(maximum_confidence, 4),
                             "supported_in_reference": supported_in_reference,
                             "transferable": (not missing and coverage > 0 and coverage * rule["weight"] >= rule["threshold"]
                                              and maximum_confidence >= settings["minimum_confidence"])}
+    for name, components in ACTIVITY_COMPONENTS.items():
+        if name not in activities:
+            continue
+        composite = activities[name]
+        composite["components"] = list(components)
+        composite["missing_components"] = [component for component in components
+                                           if not activities.get(component, {}).get("transferable")]
+        composite["maximum_confidence"] = min(composite["maximum_confidence"],
+                                              *(activities.get(component, {}).get("maximum_confidence", 0)
+                                                for component in components))
+        composite["transferable"] = (composite["transferable"] and not composite["missing_components"]
+                                     and composite["maximum_confidence"] >= settings["minimum_confidence"])
+        composite["supported_in_reference"] = (composite["supported_in_reference"]
+                                               and all(activities.get(component, {}).get("supported_in_reference")
+                                                       for component in components))
     equivalents = []
     if reference:
-        for obj in reference["devices"]:
-            relevant = {key: value for key, value in obj["properties"].items() if value > 0}
-            if not relevant:
+        target_runtime = library.runtime_from_snapshot(target)
+        source_runtime = library.runtime_from_snapshot(reference)
+        for key, binding in settings["reference_bindings"].items():
+            if binding["kind"] != "device":
                 continue
-            candidates = []
-            for other in target["devices"]:
-                # Extra properties of the target do not disqualify an equivalent
-                # role. This is directional capability coverage, not name/type similarity.
-                score = sum(min(value, other["properties"].get(key, 0)) for key, value in relevant.items()) / sum(relevant.values())
-                candidates.append((score, other))
+            source_objects = [obj for obj in source_runtime["devices"] if obj.type == binding["reference"]["type"]
+                              and match_reference_roles(obj, "device", {key: binding})]
+            if not source_objects:
+                continue
+            candidates = [match for obj in target_runtime["devices"]
+                          for match in match_reference_roles(obj, "device", {key: binding})]
             if candidates:
-                score, other = max(candidates, key=lambda item: item[0])
-                equivalents.append({"reference_device": obj["name"], "reference_type": obj["type"],
-                                    "target_device": other["name"], "target_type": other["type"],
-                                    "property_match": round(score, 4)})
+                match = max(candidates, key=lambda item: item["similarity"])
+                equivalents.append({"reference_device": source_objects[0].name, "reference_type": source_objects[0].type,
+                                    "target_device": match["target"], "target_type": match["target_type"],
+                                    "role": binding["feature"], "binding_id": key,
+                                    "property_match": round(match["similarity"], 4)})
     return {"reference_house": reference.get("label") if reference else None, "target_house": target["label"],
+            "recognition_method": "reference-role substitution", "model_fingerprint": library.model_fingerprint(settings),
             "activities": activities, "device_equivalents": equivalents,
             "note": "Property coverage describes potential transfer; measured accuracy requires labelled test runs."}

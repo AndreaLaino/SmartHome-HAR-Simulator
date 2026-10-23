@@ -228,9 +228,10 @@ class SharedLibraryTests(unittest.TestCase):
         target_ctx = house("Microwave", "PlayStation")
         target = store.register_house(target_ctx, "Target")
         runtime = store.context_runtime(target_ctx)
+        runtime["avatar_position"] = (50, 50)
         cooking = capture_frame(runtime, {"sensor 0": {"state": [1]}, "sensor 1": {"state": [0]}}, 0)
         relaxing = capture_frame(runtime, {"sensor 0": {"state": [0]}, "sensor 1": {"state": [1]}}, 5)
-        relaxing["expected_activities"] = ["eating while relaxing"]
+        relaxing["expected_activities"] = ["eating", "relaxing", "eating while relaxing"]
         dataset = {"house_id": target["house_id"], "house": target, "partition": "test", "run_id": "target", "frames": [cooking, relaxing]}
         leaked_reference = {**copy.deepcopy(dataset), "house_id": reference["house_id"], "run_id": "reference",
                             "frames": [{**relaxing, "expected_activities": ["intentionally wrong"]}]}

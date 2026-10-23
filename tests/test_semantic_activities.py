@@ -34,7 +34,7 @@ class PropertyRecognitionTests(unittest.TestCase):
     def run_sequence(self, cooking_type, relaxing_type):
         cook, relax = appliance("a", cooking_type), appliance("b", relaxing_type)
         meters = [meter("s1", cook), meter("s2", relax)]
-        runtime = {"devices": [cook, relax], "sensors": meters}
+        runtime = {"devices": [cook, relax], "sensors": meters, "avatar_position": (50, 50)}
         observations = {"s1": {"state": [1]}, "s2": {"state": [0]}}
         state = {}
         first = recognize_activities(observations, runtime, state, 0)
@@ -46,7 +46,7 @@ class PropertyRecognitionTests(unittest.TestCase):
     def test_oven_tv_and_microwave_playstation_have_the_same_activity_and_score(self):
         first = self.run_sequence("Oven", "TV")
         other = self.run_sequence("Microwave", "PlayStation")
-        self.assertEqual(first[:2], ({"cooking"}, {"eating while relaxing"}))
+        self.assertEqual(first[:2], ({"cooking"}, {"eating", "relaxing", "eating while relaxing"}))
         self.assertEqual(first[:2], other[:2])
         self.assertEqual(first[2]["recognition_results"]["eating while relaxing"]["score"],
                          other[2]["recognition_results"]["eating while relaxing"]["score"])
@@ -65,7 +65,12 @@ class PropertyRecognitionTests(unittest.TestCase):
         pc = appliance("pc", "PC")
         runtime = {"devices": [pc], "sensors": [meter("meter", pc)]}
         self.assertEqual(recognize_activities({"meter": {"state": [1]}}, runtime, {}, 0), {"working"})
-        self.assertIn("eating while relaxing", self.run_sequence("Microwave", "Computer")[1])
+        # The default work-oriented PC has only weak relaxation evidence. A
+        # composite must not fabricate relaxation from the previous cooking.
+        after_cooking = self.run_sequence("Microwave", "Computer")[1]
+        self.assertIn("working", after_cooking)
+        self.assertNotIn("relaxing", after_cooking)
+        self.assertNotIn("eating while relaxing", after_cooking)
 
     def test_reverse_or_simultaneous_use_does_not_infer_cooking_then_relaxing(self):
         cook, relax = appliance("a", "Oven"), appliance("b", "TV")
@@ -190,6 +195,7 @@ class PropertyPersistenceAndSimulationTests(unittest.TestCase):
             runtime = {"points": [], "walls": [], "doors": [], "devices": [cook, relax],
                        "sensors": [meter("cook meter", cook), meter("relax meter", relax)]}
             house = HouseState()
+            house.sim_state()["avatar_position"] = (50, 50)
             timer = SimpleNamespace(is_running=True, elapsed_time=timedelta(), current_date="2026-10-19")
             timer.get_simulated_time = lambda: f"12:{int(timer.elapsed_time.total_seconds()):02}"
             sim.toggle_device_state(None, None, house, timer, runtime, x=50, y=50, target_device=cook, render=False)
@@ -201,7 +207,8 @@ class PropertyPersistenceAndSimulationTests(unittest.TestCase):
             sim.toggle_device_state(None, None, house, timer, runtime, x=50, y=50, target_device=relax, render=False)
             sim.update_sensors(None, timer, None, house, runtime, schedule_next=False, fast=True)
             process_activities(None, timer, house.sensor_states(), house, runtime)
-            self.assertEqual(set(house.activity_state()["current_activities"]), {"eating while relaxing"})
+            self.assertEqual(set(house.activity_state()["current_activities"]),
+                             {"eating", "relaxing", "eating while relaxing"})
             result = house.activity_state()["recognition_results"]["eating while relaxing"]
             self.assertEqual(result["sources"], ["cook meter", "relax meter"])
             self.assertTrue(result["inferred"])

@@ -1,13 +1,14 @@
-"""Explainable activity scores from weighted sensor capabilities and sequences.
+"""Activity recognition through reference-role matches and observed sequences.
 
-Scores describe rule support, not calibrated probabilities. Object names are
-identifiers only; capabilities, sensor observations and room context drive rules.
+Scores describe rule support, not calibrated probabilities. Object names identify
+sources; explicit reference associations, property matches and context drive rules.
 """
 
 import copy
 import math
 
 from device_properties import default_sensor_properties, normalize_properties, validate_weight
+from reference_transfer import default_reference_bindings, validate_reference_bindings, match_reference_roles
 from lighting import LIGHT_TYPES, with_integrated_light_meters
 from room_recognition import point_in_polygon
 
@@ -32,6 +33,7 @@ DEFAULT_RULES = {
                  "required": ["bedroom_presence", "bed_weight", "lights_off", "light_power_zero"]},
 }
 BACKGROUND_ACTIVITIES = frozenset({"laundry", "dishwasher", "cleaning"})
+ACTIVITY_COMPONENTS = {"eating while relaxing": ("eating", "relaxing")}
 
 
 def recognition_settings(config=None):
@@ -46,6 +48,14 @@ def recognition_settings(config=None):
                 raise ValueError(f"{key} must be a positive finite number.")
             result[key] = value
     result["minimum_confidence"] = validate_weight(config.get("minimum_confidence", 0))
+    strict_presence = config.get("require_kitchen_presence", False)
+    if not isinstance(strict_presence, bool):
+        raise ValueError("require_kitchen_presence must be true or false.")
+    result["require_kitchen_presence"] = strict_presence
+    # A complete replacement, including an explicitly empty catalogue. Deleted
+    # reference associations must never reappear through a default-rule merge.
+    result["reference_bindings"] = validate_reference_bindings(
+        config["reference_bindings"] if "reference_bindings" in config else default_reference_bindings())
     for name, overrides in config.get("rules", {}).items():
         if not str(name).strip():
             raise ValueError("Activity names cannot be empty.")
@@ -76,7 +86,7 @@ def _room_at(rooms, obj):
                  if point_in_polygon(obj.x, obj.y, room.polygon)), None)
 
 
-def collect_evidence(sensor_states, runtime):
+def collect_evidence(sensor_states, runtime, *, settings=None, transfers=None):
     from utils import is_path_blocked_by_walls
     devices = runtime.get("devices", [])
     sensors = with_integrated_light_meters(runtime.get("sensors", []), devices)
@@ -84,14 +94,40 @@ def collect_evidence(sensor_states, runtime):
     by_sensor = {sensor.name: sensor for sensor in sensors}
     rooms = runtime.get("rooms", [])
     signals = {}
+    settings = recognition_settings(runtime.get("recognition_config")) if settings is None else settings
+    transfers = {} if transfers is None else transfers
+    house_id = runtime.get("recognition_library_link", {}).get("house_id") or runtime.get("house_id")
+    matches = {}
+
+    def roles(obj, kind):
+        key = (kind, id(obj))
+        if key not in matches:
+            # Keep fallback observation objects alive while this cache exists.
+            matches[key] = (obj, match_reference_roles(obj, kind, settings["reference_bindings"], house_id=house_id))
+        return matches[key][1]
 
     def add(prop, strength, source):
         if strength > 0:
             signals.setdefault(prop, {})[source] = max(signals.get(prop, {}).get(source, 0), min(1, strength))
 
-    def add_device(device, strength, source):
-        for prop, weight in device.properties.items():
-            add(prop, weight * device.recognition_weight * strength, source)
+    def add_object(obj, kind, strength, source, only=None):
+        for match in roles(obj, kind):
+            prop = match["feature"]
+            if only is not None and prop not in only:
+                continue
+            value = match["strength"] * strength
+            add(prop, value, source)
+            if value > 0:
+                key = (kind, obj.name, match["binding_id"], source)
+                transfers.setdefault(prop, {})[key] = {**match, "observed_strength": value, "sensor": source}
+
+    def add_bed_weight(obj, strength, source):
+        for match in roles(obj, "device"):
+            value = match["strength"] * strength
+            if match["feature"] == "sleeping" and value > 0:
+                add("bed_weight", value, source)
+                key = ("device", obj.name, match["binding_id"], source)
+                transfers.setdefault("bed_weight", {})[key] = {**match, "observed_strength": value, "sensor": source}
 
     active_presence = []
     for name in dict.fromkeys([*by_sensor, *sensor_states]):
@@ -107,13 +143,19 @@ def collect_evidence(sensor_states, runtime):
             continue
         properties = sensor.properties if sensor is not None else default_sensor_properties(sensor_type)
         reliability = sensor.recognition_weight if sensor is not None else 1.0
-        for prop, weight in properties.items():
-            add(prop, reliability * weight, name)
+        if sensor is None:
+            from types import SimpleNamespace
+            observed_sensor = SimpleNamespace(name=name, type=sensor_type, properties=properties, recognition_weight=reliability)
+        else:
+            observed_sensor = sensor
+        add_object(observed_sensor, "sensor", 1, name)
         if sensor is not None:
             room = _room_at(rooms, sensor)
-            presence = properties.get("presence", 0) * reliability
+            presence = max((match["strength"] for match in roles(sensor, "sensor") if match["feature"] == "presence"), default=0)
             if presence:
                 active_presence.append((sensor, room, presence))
+                if room is not None and room.room_type.lower() == "kitchen" and sensor_type == "PIR":
+                    add("kitchen_presence", presence, name)
                 if (room is not None and room.room_type.lower() in {"bedroom", "bathroom"}
                         and not (room.room_type.lower() == "bedroom" and sensor_type == "Weight")):
                     add(f"{room.room_type.lower()}_presence", presence, name)
@@ -123,9 +165,9 @@ def collect_evidence(sensor_states, runtime):
                    "Switch": "contact", "PIR": "presence"}.get(sensor_type)
         channel_weight = properties.get(channel, max(properties.values(), default=0))
         if device is not None:
-            add_device(device, reliability * channel_weight, name)
-            if sensor_type == "Weight" and device.properties.get("sleeping", 0):
-                add("bed_weight", device.properties["sleeping"] * device.recognition_weight * reliability * channel_weight, name)
+            add_object(device, "device", reliability * channel_weight, name)
+            if sensor_type == "Weight":
+                add_bed_weight(device, reliability * channel_weight, name)
         elif sensor is not None and sensor_type == "Weight":
             # Furniture can be observed without a mandatory name association.
             for fixture in devices:
@@ -133,23 +175,23 @@ def collect_evidence(sensor_states, runtime):
                         and _room_at(rooms, fixture) is _room_at(rooms, sensor)
                         and not is_path_blocked_by_walls(fixture.x, fixture.y, sensor.x, sensor.y,
                                                         runtime.get("walls", []), runtime.get("doors", []))):
-                    for prop in ("sleeping", "eating", "seating"):
-                        if fixture.properties.get(prop, 0):
-                            add(prop, fixture.properties[prop] * fixture.recognition_weight * reliability * channel_weight, name)
-                    if fixture.properties.get("sleeping", 0):
-                        add("bed_weight", fixture.properties["sleeping"] * fixture.recognition_weight * reliability * channel_weight, name)
+                    add_object(fixture, "device", reliability * channel_weight, name, {"sleeping", "eating", "seating"})
+                    add_bed_weight(fixture, reliability * channel_weight, name)
 
     # An unmetered active appliance can be supported by a nearby presence sensor.
     # Walls/doors constrain this fallback; no capability is inferred from a name.
+    metered_devices = {sensor.associated_device for sensor in sensors if sensor.type == "Smart Meter"}
+    metered_devices.update(data.get("associated_device") for data in sensor_states.values()
+                           if data.get("type") == "Smart Meter")
     for device in devices:
-        if not device.state:
+        if not device.state or device.name in metered_devices:
             continue
         for sensor, room, strength in active_presence:
             device_room = _room_at(rooms, device)
             nearby = (room is device_room if room is not None else math.hypot(device.x - sensor.x, device.y - sensor.y) <= 150)
             if nearby and not is_path_blocked_by_walls(device.x, device.y, sensor.x, sensor.y,
                                                      runtime.get("walls", []), runtime.get("doors", [])):
-                add_device(device, strength, sensor.name)
+                add_object(device, "device", strength, sensor.name)
 
     avatar = runtime.get("avatar_position")
     if avatar is not None:
@@ -157,6 +199,11 @@ def collect_evidence(sensor_states, runtime):
         if room is not None and room.room_type.lower() in {"bedroom", "bathroom"}:
             add(f"{room.room_type.lower()}_presence", 1, "avatar position")
         add("presence", 1, "avatar position")
+    if settings["require_kitchen_presence"] and not signals.get("kitchen_presence"):
+        # Apply the paper's observation gate before cooking can enter sequence
+        # memory. Avatar position alone cannot replace a measured kitchen PIR.
+        signals.pop("cooking", None)
+        transfers.pop("cooking", None)
     features = {prop: max(sources.values()) for prop, sources in signals.items()}
     lights = [device for device in devices if device.type in LIGHT_TYPES or device.properties.get("lighting", 0) > 0]
     light_names = {light.name for light in lights}
@@ -182,12 +229,17 @@ def recognize_activities(sensor_states, runtime, state, now_minutes, *, person_i
     if now_minutes < memory.get("last_time", now_minutes):
         memory.clear()
     memory["last_time"] = now_minutes
-    features, signals, light_power = collect_evidence(sensor_states, runtime)
+    transfers = {}
+    features, signals, light_power = collect_evidence(sensor_states, runtime, settings=settings, transfers=transfers)
+    # Primitive matched object roles and physical context are available to
+    # learned models before any hand-written activity sequence inference.
+    state["recognition_observations"] = dict(features)
     previous = memory.setdefault("active_sources", {})
     started = memory.setdefault("started", {})
     last_active = memory.setdefault("last_active", {})
     strengths = memory.setdefault("strengths", {})
     last_sources = memory.setdefault("last_sources", {})
+    last_transfers = memory.setdefault("last_transfers", {})
     for prop in ("cooking", "relaxing"):
         active_sources = set(signals.get(prop, {}))
         if person_inside and active_sources - set(previous.get(prop, [])):
@@ -197,14 +249,17 @@ def recognize_activities(sensor_states, runtime, state, now_minutes, *, person_i
             last_active[prop] = now_minutes
             strengths[prop] = features[prop]
             last_sources[prop] = list(active_sources)
+            last_transfers[prop] = copy.deepcopy(transfers.get(prop, {}))
     window = settings["meal_window_minutes"]
     cooking_age = now_minutes - last_active.get("cooking", -math.inf)
     recent = strengths.get("cooking", 0) * max(0, 1 - cooking_age / window)
     features["recent_cooking"] = recent
     if recent > 0:
         signals["recent_cooking"] = {source: recent for source in last_sources.get("cooking", [])}
+        transfers["recent_cooking"] = last_transfers.get("cooking", {})
     if recent > 0 and features.get("presence", 0) > 0 and not features.get("cooking", 0):
         features["eating"] = max(features.get("eating", 0), .9 * recent)
+        transfers["eating"] = last_transfers.get("cooking", {})
     features["cooking_then_relaxing"] = float(
         recent > 0 and features.get("relaxing", 0) > 0
         and started.get("relaxing", -math.inf) > started.get("cooking", math.inf))
@@ -227,8 +282,13 @@ def recognize_activities(sensor_states, runtime, state, now_minutes, *, person_i
             active = False
         evidence = [f"{prop}: {features.get(prop, 0):.2f}" for prop in weights if features.get(prop, 0) > 0]
         sources = sorted({source for prop in weights for source in signals.get(prop, {})})
+        relevant_transfers = {}
+        for prop in set(weights) | set(rule.get("required", [])):
+            relevant_transfers.update(transfers.get(prop, {}))
         results[name] = {"score": round(score, 4), "active": active, "evidence": evidence,
                          "sources": sources, "missing": missing,
+                         "reference_matches": sorted(relevant_transfers.values(), key=lambda item: (item["binding_id"], item["target"], item["sensor"])),
+                         "recognition_method": "reference-role substitution",
                          "inferred": name == "eating while relaxing" or (name == "eating" and not signals.get("eating"))}
     for name, result in results.items():
         weights = settings["rules"][name]["weights"]
@@ -239,11 +299,22 @@ def recognize_activities(sensor_states, runtime, state, now_minutes, *, person_i
         if result["active"] and result["confidence"] < settings["minimum_confidence"]:
             result["active"] = False
             result["abstained"] = True
-    if results.get("eating while relaxing", {}).get("active"):
-        for name in ("eating", "relaxing", "working", "cooking"):
-            if name in results:
-                results[name]["active"] = False
-                results[name]["suppressed_by"] = "eating while relaxing"
+    # A composite adds context to independently recognized activities. It must
+    # neither hide their intervals nor infer a constituent that failed its own
+    # evidence/confidence gate (for example weak PC relaxation or ongoing cooking).
+    for name, components in ACTIVITY_COMPONENTS.items():
+        composite = results.get(name)
+        if composite is None:
+            continue
+        composite["components"] = list(components)
+        composite["missing_components"] = [name for name in composite["components"]
+                                           if not results.get(name, {}).get("active")]
+        if composite["missing_components"]:
+            composite["active"] = False
+            composite["confidence"] = 0.0
+        elif composite["active"]:
+            composite["confidence"] = min(composite["confidence"],
+                                          *(results[name]["confidence"] for name in composite["components"]))
     if results.get("laundry", {}).get("active") or results.get("dishwasher", {}).get("active"):
         results.get("cleaning", {})["active"] = False
         results.get("cleaning", {})["suppressed_by"] = "laundry / dishwasher"

@@ -89,6 +89,7 @@ llm_smartmeter_profiles.json
 /recognition_library/houses/*.json
 /recognition_library/datasets/*.json
 /recognition_library/reports/*.json
+/recognition_library/reports/experiments/
 
 # Local scratch / archives
 /ignora/

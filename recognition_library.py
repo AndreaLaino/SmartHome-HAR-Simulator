@@ -44,6 +44,14 @@ def default_library():
                                           "recognition_weight": 1.0}
     settings = recognition_settings()
     settings["minimum_confidence"] = .5
+    # The shared oven reference also describes the physical-capability example.
+    # Keep the original association for existing activity-labelled devices.
+    oven = settings["reference_bindings"]["device:Oven:cooking"]
+    oven["reference"]["properties"].update(heats_food=1, food_preparation=1)
+    physical = copy.deepcopy(oven)
+    physical.update(property_weights={"heats_food": .6, "food_preparation": .4},
+                    required_properties=["food_preparation"])
+    settings["reference_bindings"]["device:Oven:cooking:food_preparation"] = physical
     return {"schema_version": 1, "library_id": uuid.uuid4().hex, "revision": 1,
             "profiles": profiles, "recognition_config": settings, "reference_house_id": None}
 
@@ -75,7 +83,13 @@ def ensure_library():
         (LIBRARY_DIR / name).mkdir(parents=True, exist_ok=True)
     if not (LIBRARY_DIR / "library.json").exists():
         atomic_json(LIBRARY_DIR / "library.json", default_library())
-    return load_library()
+    shared = load_library()
+    if "reference_bindings" not in shared["recognition_config"]:
+        from activity_recognition import recognition_settings
+        updated = copy.deepcopy(shared)
+        updated["recognition_config"] = recognition_settings(updated["recognition_config"])
+        shared = save_library(updated, shared["revision"])
+    return shared
 
 
 def save_library(payload, expected_revision):
@@ -172,6 +186,7 @@ def runtime_from_snapshot(snapshot):
                "doors": [Door(**obj) for obj in snapshot.get("doors", [])],
                "points": [Point(**obj) for obj in snapshot.get("points", [])],
                "recognition_config": copy.deepcopy(snapshot["recognition_config"])}
+    runtime["house_id"] = snapshot.get("house_id")
     return runtime
 
 
@@ -189,9 +204,21 @@ def register_house(ctx, label, *, reference=False, new=False):
     snapshot = house_snapshot(context_runtime(ctx), house_id, label.strip())
     atomic_json(LIBRARY_DIR / "houses" / f"{house_id}.json", snapshot)
     if reference:
-        library["reference_house_id"] = house_id
-        library = save_library(library, library["revision"])
+        set_reference_house(house_id)
     return snapshot
+
+
+def set_reference_house(house_id):
+    """Select a registered snapshot without publishing its local rules."""
+    from reference_transfer import anchor_reference_bindings
+    from activity_recognition import recognition_settings
+    snapshot = read_house(house_id)
+    library = load_library()
+    library["reference_house_id"] = house_id
+    config = recognition_settings(library["recognition_config"])
+    config["reference_bindings"] = anchor_reference_bindings(config["reference_bindings"], snapshot)
+    library["recognition_config"] = config
+    return save_library(library, library["revision"])
 
 
 def connect_house(ctx, *, enabled=True):

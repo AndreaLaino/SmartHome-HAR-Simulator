@@ -490,6 +490,88 @@ class TkSmokeTests(unittest.TestCase):
         self.assertEqual(self.ctx.recognition_config["rules"]["cooking"]["threshold"], .7)
         self.window.withdraw()
 
+    def test_simplified_library_registers_houses_selects_reference_and_keeps_advanced(self):
+        self.load_home()
+        self.window.deiconify()
+        self.ctx.scenario_menu.invoke("Shared recognition library…")
+        self.pump()
+        window = self.ctx._guided_recognition_library_window
+
+        def button(parent, text):
+            for child in parent.winfo_children():
+                if isinstance(child, tk.Button) and child.cget("text") == text:
+                    return child
+                found = button(child, text)
+                if found is not None:
+                    return found
+            return None
+
+        def invoke(text, parent=window):
+            widget = button(parent, text)
+            self.assertIsNotNone(widget, text)
+            self.assertTrue(widget.winfo_ismapped(), text)
+            self.assertLessEqual(widget.winfo_rootx() + widget.winfo_width(), parent.winfo_rootx() + parent.winfo_width())
+            self.assertLessEqual(widget.winfo_rooty() + widget.winfo_height(), parent.winfo_rooty() + parent.winfo_height())
+            widget.invoke()
+            self.pump()
+
+        def rename(text):
+            window._house_name.delete(0, tk.END)
+            window._house_name.insert(0, text)
+
+        window.geometry("880x600")
+        self.pump()
+        self.ctx.recognition_config = {"rules": {"cooking": {"threshold": .91}}}
+        original_rules = copy.deepcopy(recognition_library.load_library()["recognition_config"]["rules"])
+        rename("House A")
+        invoke("Set current as reference")
+        source_id = self.ctx.recognition_library_link["house_id"]
+        self.assertEqual(recognition_library.load_library()["reference_house_id"], source_id)
+        self.assertIn("House A", window._reference_summary.get())
+        self.assertEqual(window._houses_tree.set(source_id, "role"), "Reference / Current house")
+        self.assertEqual(recognition_library.load_library()["recognition_config"]["rules"], original_rules)
+
+        rename("House B")
+        invoke("Register as a new house")
+        target_id = self.ctx.recognition_library_link["house_id"]
+        self.assertNotEqual(source_id, target_id)
+        self.assertEqual(len(window._houses_tree.get_children()), 2)
+        self.assertEqual(recognition_library.load_library()["reference_house_id"], source_id)
+        window._houses_tree.selection_set(target_id)
+        invoke("Use selected house as reference")
+        self.assertEqual(recognition_library.load_library()["reference_house_id"], target_id)
+        window._houses_tree.selection_set(source_id)
+        invoke("Use selected house as reference")
+        self.assertEqual(recognition_library.load_library()["reference_house_id"], source_id)
+        self.assertEqual(self.ctx.recognition_library_link["house_id"], target_id)
+        self.assertIn("not been published", window._library_status.get())
+        invoke("Connect shared model")
+        self.assertTrue(self.ctx.recognition_library_link["enabled"])
+        self.assertEqual(self.ctx.recognition_config["rules"]["cooking"]["threshold"], .91)
+        self.ctx.scenario_menu.invoke("Shared recognition library…")
+        self.assertIs(self.ctx._guided_recognition_library_window, window)
+
+        invoke("Reference device rules…")
+        associations = self.ctx._guided_reference_rules_window
+        self.assertTrue(associations.winfo_exists())
+        associations.destroy()
+        invoke("Advanced…")
+        advanced = self.ctx._recognition_library_window
+        self.assertEqual(len(advanced._library_tabs.tabs()), 4)
+        self.assertIsNone(button(window, "Publish current house rules"))
+        advanced._house_name.delete(0, tk.END)
+        advanced._house_name.insert(0, "Renamed house B")
+        invoke("Set as reference house", advanced)
+        self.assertEqual(recognition_library.load_library()["reference_house_id"], target_id)
+        invoke("Close", advanced)
+        self.assertIn("Renamed house B", window._reference_summary.get())
+        self.assertEqual(window._house_name.get(), "Renamed house B")
+        invoke("Register / update house")
+        self.assertEqual(self.ctx.recognition_library_link["house_id"], target_id)
+        invoke("Refresh")
+        invoke("Close")
+        self.assertEqual(self.callback_errors, [])
+
     def test_shared_library_profiles_transfer_ground_truth_and_scenario_round_trip(self):
         from app.ui.activity_properties import open_properties_editor
         from recognition_evaluation import capture_frame, record_trace
@@ -497,6 +579,8 @@ class TkSmokeTests(unittest.TestCase):
         self.load_home()
         self.window.deiconify()
         self.ctx.scenario_menu.invoke("Shared recognition library…")
+        self.pump()
+        self.ctx._guided_recognition_library_window._open_advanced_library()
         self.pump()
         window = self.ctx._recognition_library_window
 
@@ -584,6 +668,296 @@ class TkSmokeTests(unittest.TestCase):
         self.assertEqual(self.ctx.read_devices[0].recognition_profile, "device:Microwave")
         self.assertEqual(self.ctx.read_devices[0].properties["cooking"], .2)
         invoke("Close")
+
+    def test_reference_rule_editor_controls_live_substitution_and_explains_it(self):
+        from activity_recognition import recognize_activities
+        from app.ui.reference_rules import open_advanced_reference_rules
+
+        self.load_home()
+        self.window.deiconify()
+        microwave = self.ctx.read_devices[0]
+        microwave.type = "Microwave"
+        microwave.properties = {"heats_food": 1, "produces_heat": .8, "defrosts": 1}
+        microwave.recognition_profile = "local"
+        microwave.state = 1
+        self.ctx.scenario_menu.invoke("Shared recognition library…")
+        self.pump()
+        self.ctx._guided_recognition_library_window._open_advanced_library()
+        self.pump()
+        window = self.ctx._recognition_library_window
+
+        def button(parent, text):
+            for child in parent.winfo_children():
+                if isinstance(child, tk.Button) and child.cget("text") == text:
+                    return child
+                found = button(child, text)
+                if found is not None:
+                    return found
+            return None
+
+        def invoke(text, parent=window):
+            widget = button(parent, text)
+            self.assertIsNotNone(widget, text)
+            widget.invoke()
+            self.pump()
+
+        def replace(entry, text):
+            entry.delete(0, tk.END)
+            entry.insert(0, text)
+
+        invoke("Connect shared model")
+        window._library_tabs.select(3)
+        self.pump()
+        editor = window._reference_editor
+        fields = editor.fields
+        self.assertEqual(fields["id"].get(), "device:Oven:cooking")
+        replace(fields["properties"], "heats_food=1, produces_heat=0.8")
+        replace(fields["weights"], "heats_food=0.9, produces_heat=0.1")
+        replace(fields["required"], "missing")
+        revision = recognition_library.load_library()["revision"]
+        invoke("Save reference rule")
+        self.assertIn("Required properties", window._library_status.get())
+        self.assertEqual(recognition_library.load_library()["revision"], revision)
+        replace(fields["required"], "heats_food")
+        invoke("Save reference rule")
+        save_button = button(window, "Save reference rule")
+        self.assertTrue(save_button.winfo_ismapped())
+        self.assertLess(save_button.winfo_rooty() + save_button.winfo_height(), window.winfo_rooty() + window.winfo_height())
+
+        runtime = recognition_library.context_runtime(self.ctx)
+        observation = {"motion": {"state": [1]}}
+        state = self.ctx.house_state.activity_state()
+        self.assertIn("cooking", recognize_activities(observation, runtime, state, 0))
+        self.assertNotIn("cooking", microwave.properties)
+        self.ctx.scenario_menu.invoke("Activity recognition…")
+        self.pump()
+        activity_window = self.ctx._recognition_window
+        activity_window._recognition_tree.selection_set("cooking")
+        details = activity_window._open_reference_details()
+        self.pump()
+        explanation = details._explanation_text.get("1.0", tk.END)
+        self.assertIn("Microwave", explanation)
+        self.assertIn("Oven", explanation)
+        self.assertIn("heats_food", explanation)
+        details.destroy()
+
+        invoke("Delete reference rule")
+        self.assertNotIn("cooking", recognize_activities(observation, runtime, state, 1))
+        fields["id"].set("new oven association")
+        replace(fields["feature"], "cooking")
+        fields["source"].set("Catalogue: device:Oven")
+        fields["source"].event_generate("<<ComboboxSelected>>")
+        self.pump()
+        replace(fields["properties"], "heats_food=1, produces_heat=0.8")
+        replace(fields["weights"], "heats_food=1")
+        replace(fields["required"], "heats_food")
+        invoke("Save reference rule")
+        self.assertIn("cooking", recognize_activities(observation, runtime, state, 2))
+
+        local = open_advanced_reference_rules(self.ctx)
+        local._reference_editor.fields["id"].set("new oven association")
+        local._reference_editor.fields["id"].event_generate("<<ComboboxSelected>>")
+        self.pump()
+        invoke("Delete reference rule", local)
+        self.assertNotIn("cooking", recognize_activities(observation, runtime, state, 3))
+        self.assertIn("new oven association", recognition_library.load_library()["recognition_config"]["reference_bindings"])
+        invoke("Close", local)
+        invoke("Close", activity_window)
+        destination = self.root / "reference-overrides.csv"
+        with patch.object(scenario.messagebox, "showinfo"):
+            self.assertTrue(scenario._write_scenario(self.ctx, destination))
+        self.assertTrue(scenario.load_scenario_from_path(self.ctx, self.ctx.canvas, destination))
+        self.pump()
+        self.assertNotIn("new oven association", self.ctx.recognition_config["reference_bindings"])
+        self.assertNotIn("cooking", recognize_activities(observation, recognition_library.context_runtime(self.ctx), {}, 0))
+        invoke("Close")
+
+    def test_guided_reference_rules_filter_first_and_keep_advanced_editor_accessible(self):
+        from app.ui.reference_rules import open_reference_rules
+
+        self.load_home()
+        target = self.ctx.read_devices[0]
+        target.type = "Microwave"
+        target.properties = {"heats_food": 1, "food_preparation": 1}
+        target.recognition_profile = "local"
+        oven = {"feature": "cooking", "kind": "device",
+                "reference": {"name": "reference oven", "type": "Oven", "house_id": "source",
+                              "properties": {"heats_food": 1, "food_preparation": 1}, "recognition_weight": 1},
+                "property_weights": {"heats_food": .6, "food_preparation": .4},
+                "required_properties": ["food_preparation"], "minimum_similarity": .5, "strength": 1, "weight": 1}
+        from reference_transfer import default_reference_bindings
+        self.ctx.recognition_config["reference_bindings"] = {
+            "known oven": oven, "known tv": default_reference_bindings()["device:TV:relaxing"]}
+        self.ctx.scenario_menu.invoke("Activity recognition…")
+        self.pump()
+        activity_window = self.ctx._recognition_window
+
+        def find_button(parent, label):
+            for child in parent.winfo_children():
+                if isinstance(child, tk.Button) and child.cget("text") == label:
+                    return child
+                found = find_button(child, label)
+                if found is not None:
+                    return found
+            return None
+
+        find_button(activity_window, "Reference device rules…").invoke()
+        self.pump()
+        window = self.ctx._guided_reference_rules_window
+        editor = window._guided_reference_editor
+        self.assertIsNone(find_button(window, "Save reference rule"))
+        for field, value in (("source", next(key for key in editor.sources if "(Oven)" in key)),
+                             ("target", next(iter(editor.targets)))):
+            editor.fields[field].set(value)
+            editor.fields[field].event_generate("<<ComboboxSelected>>")
+            self.pump()
+        self.assertEqual(set(editor.options), {"cooking"})
+        self.assertEqual(editor.activities_menu.index(tk.END), 0)
+        self.assertEqual(str(editor.save_button.cget("state")), "disabled")
+        editor.activities_menu.invoke(0)
+        self.assertEqual(str(editor.save_button.cget("state")), "normal")
+
+        tv = next(key for key in editor.sources if "(TV)" in key)
+        editor.fields["source"].set(tv)
+        editor.fields["source"].event_generate("<<ComboboxSelected>>")
+        self.pump()
+        self.assertEqual(editor.options, {})
+        self.assertEqual(editor.activity_variables, {})
+        self.assertEqual(str(editor.activities_button.cget("state")), "disabled")
+        self.assertEqual(str(editor.save_button.cget("state")), "disabled")
+
+        oven_choice = next(key for key in editor.sources if "(Oven)" in key)
+        editor.fields["source"].set(oven_choice)
+        editor.fields["source"].event_generate("<<ComboboxSelected>>")
+        self.pump()
+        editor.activities_menu.invoke(0)
+        before = copy.deepcopy(self.ctx.recognition_config)
+        target.properties.pop("food_preparation")
+        editor.save_button.invoke()
+        self.pump()
+        self.assertEqual(self.ctx.recognition_config, before)
+        self.assertEqual(editor.options, {})
+        self.assertIn("currently compatible", editor.status.get())
+
+        target.properties["food_preparation"] = 1
+        editor.reload()
+        self.pump()
+        editor.activities_menu.invoke(0)
+        editor.save_button.invoke()
+        self.pump()
+        self.assertIn("Selected reference roles", editor.status.get())
+        self.assertNotIn("cooking", target.properties)
+        self.assertEqual(editor.fields["source"].get(), "")
+        self.assertEqual(editor.fields["target"].get(), "")
+        editor.advanced_button.invoke()
+        self.pump()
+        advanced = next(child for child in self.window.winfo_children()
+                        if isinstance(child, tk.Toplevel) and child.title() == "Advanced reference device rules")
+        self.assertEqual(advanced._reference_editor.fields["id"].get(), "known oven")
+        self.assertIsNotNone(find_button(advanced, "Save reference rule"))
+        advanced.destroy()
+        self.pump()
+        self.assertEqual(editor.options, {})
+        window.geometry("880x580")
+        self.pump()
+        self.assertTrue(editor.advanced_button.winfo_ismapped())
+        self.assertLess(editor.advanced_button.winfo_rooty() + editor.advanced_button.winfo_height(),
+                        window.winfo_rooty() + window.winfo_height())
+        self.assertEqual(self.callback_errors, [])
+
+    def test_guided_reference_rules_allow_oven_then_tv_in_the_same_window(self):
+        from app.ui.reference_rules import open_reference_rules
+
+        path = Path(__file__).resolve().parents[1] / "examples" / "reference_transfer" / "microwave_target.csv"
+        self.assertTrue(scenario.load_scenario_from_path(self.ctx, self.ctx.canvas, path))
+        self.ctx.read_devices.append(Device("console", 180, 150, "PlayStation", 180, 0, 180, 180))
+        shared_before = recognition_library.ensure_library()
+        before = copy.deepcopy(self.ctx.recognition_config["reference_bindings"])
+        self.assertNotIn("relaxing", {binding["feature"] for binding in before.values()})
+        window = open_reference_rules(self.ctx)
+        self.pump()
+        editor = window._guided_reference_editor
+        self.assertGreater(editor.winfo_width() / editor.master.winfo_width(), .70)
+        self.assertLess(editor.winfo_width() / editor.master.winfo_width(), .78)
+        oven = next(label for label in editor.sources if label.startswith("Shared catalogue:") and "(Oven)" in label)
+        tv = next(label for label in editor.sources if label.startswith("Shared catalogue:") and "(TV)" in label)
+        microwave = next(label for label in editor.targets if "(Microwave)" in label)
+        console = next(label for label in editor.targets if "(PlayStation)" in label)
+
+        def select(field, value):
+            editor.fields[field].set(value)
+            editor.fields[field].event_generate("<<ComboboxSelected>>")
+            self.pump()
+
+        select("source", oven)
+        select("target", microwave)
+        self.assertEqual(set(editor.options), {"cooking"})
+        self.assertEqual(editor.options["cooking"]["similarity"], 1)
+        details = editor.details.get("1.0", tk.END)
+        self.assertIn("food_preparation=1", details)
+        editor.activities_menu.invoke(0)
+        editor.save_button.invoke()
+        self.pump()
+        self.assertEqual(editor.fields["source"].get(), "")
+        self.assertEqual(editor.fields["target"].get(), "")
+        self.assertIn(tv, editor.fields["source"].cget("values"))
+
+        # Both pickers stay complete and usable after clearing the saved pair.
+        select("source", tv)
+        select("target", microwave)
+        self.assertEqual(editor.options, {})
+        self.assertEqual(str(editor.fields["source"].cget("state")), "readonly")
+        self.assertEqual(str(editor.fields["target"].cget("state")), "readonly")
+        self.assertIn(oven, editor.fields["source"].cget("values"))
+        self.assertIn(tv, editor.fields["source"].cget("values"))
+        self.assertIn(console, editor.fields["target"].cget("values"))
+        select("target", console)
+        self.assertEqual(set(editor.options), {"relaxing"})
+        self.assertNotIn("relaxing", {binding["feature"] for binding in self.ctx.recognition_config["reference_bindings"].values()})
+        editor.activities_menu.invoke(0)
+        editor.save_button.invoke()
+        self.pump()
+        self.assertEqual(editor.fields["source"].get(), "")
+        self.assertEqual(editor.fields["target"].get(), "")
+        bindings = self.ctx.recognition_config["reference_bindings"]
+        self.assertEqual(bindings["known_oven_cooking"], before["known_oven_cooking"])
+        self.assertIn("relaxing", {binding["feature"] for binding in bindings.values()})
+        self.assertIn(oven, editor.fields["source"].cget("values"))
+        self.assertIn(tv, editor.fields["source"].cget("values"))
+        self.assertEqual(recognition_library.load_library(), shared_before)
+
+        # The reverse order also works, without reopening the editor.
+        select("target", microwave)
+        self.assertEqual(editor.options, {})
+        select("source", oven)
+        self.assertEqual(set(editor.options), {"cooking"})
+
+        # The sidebar shows saved references and their destinations. Removing the
+        # TV reference affects this house only and survives saving/reopening it.
+        tv_key = next(key for key, binding in bindings.items() if binding["feature"] == "relaxing")
+        self.assertIn("console", editor.connections.item(tv_key, "values")[2])
+        observation = {"console meter": {"type": "Smart Meter", "associated_device": "console",
+                                          "state": [1], "consumption": [180]}}
+        from activity_recognition import recognize_activities
+        self.assertIn("relaxing", recognize_activities(observation, recognition_library.context_runtime(self.ctx), {}, 0))
+        editor.connections.selection_set(tv_key)
+        self.pump()
+        self.assertEqual(str(editor.remove_button.cget("state")), "normal")
+        editor.remove_button.invoke()
+        self.pump()
+        self.assertFalse(editor.connections.exists(tv_key))
+        self.assertNotIn(tv_key, self.ctx.recognition_config["reference_bindings"])
+        self.assertIn("known_oven_cooking", self.ctx.recognition_config["reference_bindings"])
+        self.assertNotIn("relaxing", recognize_activities(observation, recognition_library.context_runtime(self.ctx), {}, 1))
+        self.assertEqual(recognition_library.load_library(), shared_before)
+        destination = self.root / "removed-reference.csv"
+        destination.write_text(scenario._serialize_scenario(self.ctx), encoding="utf-8")
+        self.assertTrue(scenario.load_scenario_from_path(self.ctx, self.ctx.canvas, destination))
+        editor.reload()
+        self.pump()
+        self.assertNotIn(tv_key, self.ctx.recognition_config["reference_bindings"])
+        self.assertFalse(editor.connections.exists(tv_key))
+        self.assertEqual(self.callback_errors, [])
 
     def check_light_only_manual_simulation(self, light_type):
         content = SMOKE_SCENARIO.replace("motion,50,50,PIR,0,1,1,0,90,None,None\n", "")

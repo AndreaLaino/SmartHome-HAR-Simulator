@@ -489,6 +489,8 @@ def build_home_ui(ctx: AppContext):
     scenario_menu.add_command(label="Activity recognition…", command=lambda: open_activity_recognition(ctx))
     from app.ui.recognition_library_ui import open_recognition_library
     scenario_menu.add_command(label="Shared recognition library…", command=lambda: open_recognition_library(ctx))
+    from app.ui.har_experiment import open_har_experiment
+    scenario_menu.add_command(label="Source / target experiment…", command=lambda: open_har_experiment(ctx))
 
     # Settings menu (personal preferences, independent from scenario files)
     settings_menu = Menu(menu_bar, tearoff=0)
