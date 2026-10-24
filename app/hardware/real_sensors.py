@@ -243,12 +243,6 @@ def start_dht_logger(sensor_label: str, gpio: int, interval: int = DHT_DEFAULT_I
     return logger_obj
 
 
-def stop_dht_logger(sensor_label: str) -> None:
-    logger_obj = DHT_LOGGERS.pop(str(sensor_label), None)
-    if logger_obj:
-        logger_obj.stop()
-
-
 def load_temp_by_label_any_csv(label: str, logs_dir=DEVICES_DIR) -> pd.DataFrame:
     path = os.path.join(logs_dir, f"dht_{_sanitize(label)}.csv")
     rows = []
@@ -437,13 +431,6 @@ def start_gpio_logger(
     return logger_obj
 
 
-def stop_gpio_logger(sensor_label: str, kind: str) -> None:
-    key = f"{_kind_prefix(kind)}:{sensor_label}"
-    logger_obj = GPIO_LOGGERS.pop(key, None)
-    if logger_obj:
-        logger_obj.stop()
-
-
 def load_value_by_label_any_csv(label: str, kind: str, logs_dir=DEVICES_DIR) -> pd.DataFrame:
     path = os.path.join(logs_dir, f"{_kind_prefix(kind)}_{_sanitize(label)}.csv")
     rows = []
@@ -511,5 +498,4 @@ def stop_all() -> None:
 # Compatibility aliases used by the old root-level dhtlogger module.
 DEFAULT_INTERVAL = DHT_DEFAULT_INTERVAL
 LOGGERS = DHT_LOGGERS
-csv_path_for_label = dht_csv_path_for_label
 csv_ensure_header = dht_csv_ensure_header

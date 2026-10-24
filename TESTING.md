@@ -44,12 +44,13 @@ python -m unittest discover -s tests -p test_cloud_import.py -v
 | Clock, sensor ticks, fast-forward, session isolation | `test_simulation_runtime.py`, `test_core_simulator.py` |
 | Saved home through appliance cycle, HAR history, and log replay | `test_simulator_workflow.py` |
 | Scenario persistence, malformed inputs, save sessions | `test_scenario_persistence.py`, `test_scenario_io.py` |
-| Activity and presence recognition | `test_activity.py` |
+| Activity intervals and shutdown | `test_activity.py` |
+| Learned HAR, cross-house features, recordings and model validation | `test_learned_har.py`, `test_har_category_features.py`, `test_har_storage.py`, `test_learned_har_live.py` |
 | Geometry, zoom, rooms, editing and selection | `test_geometry.py`, `test_room_recognition.py`, `test_device_inspector.py`, `test_segment_creation.py`, `test_room_ui.py`, `test_tool_palette.py` |
 | Temperature, consumption, prediction, profiles, hardware | `test_temperature.py`, `test_sensor_regressions.py`, `test_sensor_profile_loading.py`, `test_hardware_integrations.py` |
 | Graph data, interaction logging, replay and export | `test_graph_data.py`, `test_session_logging.py`, `test_automatic_replay.py` |
 | Cloud import and optional LLM processing | `test_cloud_import.py`, `test_llm_smartmeter.py`, `test_cycle_pipeline.py` |
-| Actual Tk widgets | `test_tk_smoke.py` (opt-in) |
+| Actual Tk widgets | `test_tk_smoke.py`, `test_learned_har_ui.py` (opt-in) |
 
 ## Real Tk smoke tests
 

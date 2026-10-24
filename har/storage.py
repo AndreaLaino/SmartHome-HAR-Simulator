@@ -153,9 +153,6 @@ def validate_session(session: dict) -> dict:
     return session
 
 
-_validate_session = validate_session  # Compatibility for callers of the initial internal helper.
-
-
 def save_session(session: dict) -> Path:
     validate_session(session)
     path = ensure_data() / "sessions" / f"{session['session_id']}.json"

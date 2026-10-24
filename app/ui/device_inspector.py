@@ -130,11 +130,6 @@ def _set_selected_objects(ctx, selections: list[MapSelection]) -> None:
     )
 
 
-def clear_device_selection(ctx) -> None:
-    """Backward-compatible name used by older UI code/tests."""
-    clear_selection(ctx)
-
-
 def _distance_to_segment(px, py, x1, y1, x2, y2) -> float:
     dx = x2 - x1
     dy = y2 - y1
@@ -1313,11 +1308,6 @@ def delete_selected_object(ctx, _event=None):
     return "break" if deleted else None
 
 
-def delete_selected_device(ctx, _event=None):
-    """Backward-compatible alias; selection is no longer device-only."""
-    return delete_selected_object(ctx, _event)
-
-
 def _show_selection_actions(ctx, selection: MapSelection, event) -> None:
     value = selection.value
     name = (
@@ -1435,11 +1425,6 @@ def open_selection_menu_at_event(ctx, event):
     ctx.canvas.focus_set()
     _show_selection_actions(ctx, selection, event)
     return "break"
-
-
-def select_device_at_event(ctx, event):
-    """Backward-compatible alias for the generic map selector."""
-    return select_object_at_event(ctx, event)
 
 
 def set_canvas_mode(ctx, mode: str, text: str) -> None:

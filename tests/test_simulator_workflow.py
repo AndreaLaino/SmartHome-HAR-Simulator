@@ -17,13 +17,45 @@ import read
 import sensor
 import sim
 from house_state import HouseState
+from har import storage
+from har.catalogue import default_catalogue
+from har.learning import train_source
 from timer import TimerApp
 
 
 class SimulatorWorkflowTests(unittest.TestCase):
+    @staticmethod
+    def source_sessions():
+        """Independent labelled washer cycles, distinct from the tested house."""
+        sessions = []
+        for index in range(5):
+            frames = []
+            for tick in range(40):
+                active = tick % 4 in (1, 2)
+                watts = 100 + 20 * ((tick + index) % 6) if active else 0
+                frames.append({
+                    "time_seconds": tick * (60 + index), "labels": ["laundry"] if active else [],
+                    "devices": [{"name": "source_washer", "type": "Washing_Machine", "state": int(active),
+                                 "power": 1000, "max_consumption": 1000, "current_consumption": watts,
+                                 "categories": ["DeviceCleaning"]}],
+                    "sensors": [{"name": "source_meter", "type": "Smart Meter", "min_val": 0, "max_val": 1000,
+                                 "state": int(active), "consumption": watts, "associated_device": "source_washer",
+                                 "categories": ["SensorPower"]}],
+                    "sensor_states": {"source_meter": {"state": [int(active)], "consumption": [watts]}},
+                    "rooms": [],
+                })
+            sessions.append({"schema_version": 1, "session_id": f"source-cycle-{index}",
+                             "simulation_session_id": f"source-simulation-{index}", "house_id": "source-home",
+                             "house_label": "Source washer", "partition": "source",
+                             "catalogue": default_catalogue(), "frames": frames})
+        return sessions
+
     def test_loaded_appliance_cycle_produces_matching_har_history_and_replay(self):
         with ExitStack() as stack:
             root = Path(stack.enter_context(tempfile.TemporaryDirectory()))
+            stack.enter_context(patch.object(storage, "DATA_DIR", root / "har_data"))
+            model = train_source(self.source_sessions(), "source-home", window_seconds=60)
+            storage.save_model(model)
             for name in ("coordinates", "read_walls", "read_walls_coordinates", "read_sensors", "read_devices", "read_doors"):
                 stack.enter_context(patch.object(read, name, []))
             stack.enter_context(patch.object(read, "read_room_overrides", {}))
@@ -42,7 +74,8 @@ class SimulatorWorkflowTests(unittest.TestCase):
                 encoding="utf-8",
             )
             points, walls, sensors, devices, doors = read.read_coordinates_from_file(path)
-            runtime = {"points": points, "walls": walls, "sensors": sensors, "devices": devices, "doors": doors}
+            runtime = {"points": points, "walls": walls, "sensors": sensors, "devices": devices, "doors": doors,
+                       "har_config": {"house_id": "target-home", "model_id": model["model_id"]}}
             state = HouseState()
             timer = TimerApp.__new__(TimerApp)
             timer.simulated_start_time = datetime(2026, 7, 14, 12)
@@ -51,6 +84,7 @@ class SimulatorWorkflowTests(unittest.TestCase):
             timer.is_running = True
             log.start_interaction_log_session(state)
             try:
+                activity.process_activities(None, timer, state.sensor_states(), state, runtime)
                 sim.toggle_device_state(None, None, state, timer, runtime, x=10, y=10, render=False)
                 self.assertEqual(devices[0].state, 1)
                 for minute in range(1, 4):

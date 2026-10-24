@@ -59,6 +59,10 @@ The main simulation workflows are available from the `Simulation` menu:
 
 ## Learned Activity Recognition Across Houses
 
+Activity recognition now uses the trained model exclusively. The old appliance-name,
+meal-time and entry/exit rules have been removed from `activity.py`; it manages
+model predictions, activity intervals and polling.
+
 Open **Scenario > Learned activity recognition…** to assign shared object
 categories, record observations with human activity labels, and train a Random
 Forest on a source house. The same model can recognize activities in other

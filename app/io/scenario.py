@@ -3,7 +3,7 @@ from __future__ import annotations
 import os, csv, shutil, json, glob, io
 import tempfile
 from tkinter import messagebox
-from app.io.safe_dialog import ask_open_file, ask_open_files, ask_save_file, ask_directory
+from app.io.safe_dialog import ask_open_file, ask_open_files, ask_save_file
 import tkinter as tk
 from tkinter import ttk
 from datetime import datetime
@@ -47,8 +47,6 @@ def _ask_overwrite_or_append(parent, dest_path: str) -> str:
         return 'append'
     else:
         return ''  # Cancelled
-
-
 
 
 logger = setup_logging("io.scenario")
@@ -618,21 +616,9 @@ def open_scenario(ctx: AppContext, canvas) -> None:
     _load_scenario(ctx, canvas, filename)
 
 
-
 def _sanitize(name: str) -> str:
     return "".join(ch if ch.isalnum() or ch in "-._" else "-" for ch in (name or "").strip())
 
-def _unique_path(path: str) -> str:
-    """If it already exists, add _2, _3, ... before the extension."""
-    if not os.path.exists(path):
-        return path
-    root, ext = os.path.splitext(path)
-    i = 2
-    while True:
-        p2 = f"{root}_{i}{ext}"
-        if not os.path.exists(p2):
-            return p2
-        i += 1
 
 def _ask_choice(parent, title: str, label: str, choices: list[str], default: str | None = None) -> str | None:
     win = tk.Toplevel(parent) if parent else tk.Toplevel()

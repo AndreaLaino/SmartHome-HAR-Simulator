@@ -37,15 +37,6 @@ class LearnedActivityFlowTests(unittest.TestCase):
             "rooms": [], "walls": [], "doors": [],
             "har_config": storage.new_house_config(),
         }
-        # Deliberately fail if *any* rule or avatar decision leaks into ML mode.
-        for name in (
-            "_presence_from_avatar", "detect_entering_home", "detect_exiting_home",
-            "detect_laundry", "detect_dishwasher", "detect_sleeping",
-            "detect_cooking", "detect_meal", "detect_office",
-        ):
-            self.stack.enter_context(patch.object(
-                activity, name, side_effect=AssertionError(f"Legacy detector used: {name}"),
-            ))
 
     def process(self):
         activity.process_activities(
@@ -58,6 +49,14 @@ class LearnedActivityFlowTests(unittest.TestCase):
         self.assertEqual(self.house.activity_state()["har_prediction"]["status"], "no_model")
         self.assertEqual(self.house.activity_log_state()["active_activities"], {})
         self.assertIn("no trained model", self.label.config.call_args.kwargs["text"])
+
+    def test_callers_without_house_configuration_still_use_learned_recognition(self):
+        self.sources.pop("har_config")
+        self.sources["sensors"] = [Sensor("kitchen", 0, 0, "PIR", 0, 1, 1, 1, direction=0)]
+        self.house.sensor_states()["kitchen"] = {"state": [1]}
+        self.process()
+        self.assertEqual(self.house.activity_state()["har_prediction"]["status"], "no_model")
+        self.assertEqual(self.house.activity_log_state()["active_activities"], {})
 
     def test_only_model_predictions_start_and_end_logged_activities(self):
         result = {

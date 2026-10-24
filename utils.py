@@ -1,71 +1,16 @@
-import tkinter as tk
 import math
-import os
-import json
 from typing import Optional
 
 from consumption_profiles import consumption_profiles, get_device_consumption
-from models import Sensor, Device, Point, Door, Wall
 from lighting import LIGHT_TYPES
 from label_layout import create_map_label, layout_map_labels
 from canvas_zoom import to_canvas, to_canvas_length
-
-# Cache to avoid re-reading CSVs repeatedly when drawing sensors.
-_REAL_TEMP_CACHE: dict[str, bool] = {}
 
 PIR_MAX_DISTANCE = 230
 PIR_FOV_ANGLE = 60
 PIR_FOV_TAG = "fov"
 PIR_FOV_FILL = (255, 231, 163)
 PIR_FOV_OUTLINE = (210, 139, 0)
-
-
-def _is_real_temperature_sensor(sensor_name: str, logs_dir: str = "devices") -> bool:
-    """Return True if this Temperature sensor is backed by real DHT logs.
-
-    We detect it by:
-      1) Trying label-based CSV lookup (sensor_name).
-      2) Falling back to sensor_map.json -> gpio lookup.
-    """
-    if not sensor_name:
-        return False
-    if sensor_name in _REAL_TEMP_CACHE:
-        return _REAL_TEMP_CACHE[sensor_name]
-
-    ok = False
-    try:
-        from app.hardware.real_sensors import load_temp_by_gpio_any_csv, load_temp_by_label_any_csv
-
-        # 1) label lookup
-        df = None
-        try:
-            df = load_temp_by_label_any_csv(sensor_name, logs_dir=logs_dir)
-        except TypeError:
-            # older signature (no logs_dir)
-            df = load_temp_by_label_any_csv(sensor_name)
-        if df is not None and not df.empty and "value" in df.columns:
-            ok = True
-        else:
-            # 2) gpio lookup via sensor_map.json
-            mapping_path = "sensor_map.json"
-            if os.path.isfile(mapping_path):
-                with open(mapping_path, "r", encoding="utf-8") as f:
-                    mapping = json.load(f) if f else {}
-                cfg = mapping.get(sensor_name, {}) if isinstance(mapping, dict) else {}
-                if isinstance(cfg, dict) and cfg.get("by") == "dht":
-                    gpio = cfg.get("gpio")
-                    if gpio is not None:
-                        try:
-                            df2 = load_temp_by_gpio_any_csv(int(gpio), logs_dir=logs_dir)
-                        except TypeError:
-                            df2 = load_temp_by_gpio_any_csv(int(gpio))
-                        if df2 is not None and not df2.empty and "value" in df2.columns:
-                            ok = True
-    except Exception:
-        ok = False
-
-    _REAL_TEMP_CACHE[sensor_name] = ok
-    return ok
 
 
 def _temperature_color(sensor_name: str, changing: bool = False) -> str:
@@ -317,19 +262,6 @@ def raise_overlay_labels(canvas):
 def calculate_distance(x1, y1, x2, y2):
     return math.sqrt((x2 - x1) ** 2 + (y2 - y1) ** 2)
 
-def draw_fov(canvas, x, y, max_distance, fov_angle, direction):
-    direction_rad = math.radians(direction)
-    fov_half_angle_rad = math.radians(fov_angle / 2)
-    vertex1_x = x + max_distance * math.cos(direction_rad - fov_half_angle_rad)
-    vertex1_y = y + max_distance * math.sin(direction_rad - fov_half_angle_rad)
-    vertex2_x = x + max_distance * math.cos(direction_rad + fov_half_angle_rad)
-    vertex2_y = y + max_distance * math.sin(direction_rad + fov_half_angle_rad)
-    canvas.delete('fov')
-    x, y = to_canvas(canvas, x, y)
-    vertex1_x, vertex1_y = to_canvas(canvas, vertex1_x, vertex1_y)
-    vertex2_x, vertex2_y = to_canvas(canvas, vertex2_x, vertex2_y)
-    canvas.create_polygon(x, y, vertex1_x, vertex1_y, vertex2_x, vertex2_y,
-                          fill="", outline="blue", width=2, tags='fov')
 
 def get_nearby_device_states(sensor, devices, walls, doors, max_distance=100):
     x1, y1 = sensor.x, sensor.y

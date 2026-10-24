@@ -1,7 +1,7 @@
 import tkinter as tk
 from tkinter import simpledialog, messagebox
 from tkinter import ttk
-from utils import draw_sensor, calculate_distance, update_temperature_sensor_color
+from utils import draw_sensor
 from device import devices
 from datetime import datetime, timedelta
 from consumption_profiles import get_device_consumption, consumption_profiles
@@ -518,21 +518,6 @@ def get_sensor_params(sensor_type):
     )
 
 
-def _last_slope_deg_per_min(series) -> float:
-    """Return the final slope in C/min (last difference)."""
-    if not series:
-        return 0.0
-    times, vals = series
-    if not times or not vals or len(times) < 2:
-        return 0.0
-    t2, t1 = float(times[-1]), float(times[-2])
-    v2, v1 = float(vals[-1]), float(vals[-2])
-    dt = (t2 - t1)
-    if dt <= 0:
-        return 0.0
-    return (v2 - v1) / dt
-
-
 def add_sensor(canvas, event, load_active, on_changed=None, on_finished=None):
     global add_point_enabled
     created = False
@@ -594,86 +579,6 @@ def add_sensor(canvas, event, load_active, on_changed=None, on_finished=None):
     finally:
         if callable(on_finished):
             on_finished(created)
-
-
-def get_last_real_temperature(sensor_name: str, window_minutes: int = 10):
-    if not sensor_name:
-        return None
-
-    mapping = _load_sensor_map()
-    cfg = mapping.get(sensor_name, {})
-
-    df = None
-
-    # 1) if bound to DHT via GPIO, try GPIO
-    if isinstance(cfg, dict) and cfg.get("by") == "dht":
-        gpio = cfg.get("gpio")
-        if gpio is not None:
-            try:
-                df = load_temp_by_gpio_any_csv(int(gpio))
-            except Exception as e:
-                print(f"[WARN] load_temp_by_gpio_any_csv failed for {sensor_name}: {e}")
-
-    # 2) otherwise try by label
-    if df is None or df.empty:
-        try:
-            df = load_temp_by_label_any_csv(sensor_name)
-        except Exception as e:
-            print(f"[WARN] load_temp_by_label_any_csv failed for {sensor_name}: {e}")
-            df = None
-
-    if df is None or df.empty or "value" not in df.columns:
-        return None
-
-    # keep only valid numeric values
-    df_valid = df.dropna(subset=["value"])
-    if df_valid.empty:
-        return None
-
-    # latest value (i.e., at that minute)
-    try:
-        latest = float(df_valid["value"].iloc[-1])
-        return latest
-    except Exception:
-        return None
-    
-      
-def infer_room_state(sensor_name: str, window_minutes: int = 20) -> str:
-    if not sensor_name:
-        return "unknown"
-
-    mapping = _load_sensor_map()
-    cfg = mapping.get(sensor_name, {})
-
-    df = None
-    if isinstance(cfg, dict) and cfg.get("by") == "dht":
-        gpio = cfg.get("gpio")
-        if gpio is not None:
-            df = load_temp_by_gpio_any_csv(int(gpio))
-
-    if df is None or df.empty:
-        df = load_temp_by_label_any_csv(sensor_name)
-
-    if df is None or df.empty or "value" not in df.columns:
-        return "unknown"
-
-    tail = df.tail(window_minutes)
-    if len(tail) < 2:
-        return "unknown"
-
-    t0 = float(tail["value"].iloc[0])
-    t1 = float(tail["value"].iloc[-1])
-    delta = t1 - t0
-    slope = delta / max(1, len(tail) - 1)  # °C for minute
-
-    if slope > 0.15 and t1 >= 26:
-        return "cooking"      
-    elif slope > 0.05:
-        return "heating"     
-    elif slope < -0.05:
-        return "cooling"    
-    else:
-        return "stable"
 
 
 def compute_temperature(sensor, heating_factor, delta_seconds, current_datetime=None, active_devices=None):
@@ -1584,37 +1489,6 @@ def _select_realtime_completion_match(
         "duration_minutes": float(curve[0][-1]),
         "score": float(score),
     }
-
-
-def _realtime_csv_candidates(
-    sensor_name: str,
-    associated_device: Optional[str],
-    source_name: Optional[str] = None,
-) -> list[Path]:
-    devices_dir = _BASE_DIR / "devices"
-    tokens = [source_name or "", associated_device or "", sensor_name]
-    candidates: list[tuple[int, Path]] = []
-    for priority, token in enumerate(tokens):
-        clean = str(token or "").strip()
-        if not clean:
-            continue
-        paths = [
-            devices_dir / f"{clean}.csv",
-            devices_dir / f"smartmeter_{clean}.csv",
-        ]
-        paths.extend(sorted(devices_dir.glob(f"{clean}*.csv")))
-        paths.extend(sorted(devices_dir.glob(f"smartmeter_{clean}*.csv")))
-        candidates.extend((priority, path) for path in paths)
-
-    seen = set()
-    unique: list[tuple[int, Path]] = []
-    for priority, path in candidates:
-        key = str(path)
-        if key not in seen and path.is_file():
-            seen.add(key)
-            unique.append((priority, path))
-    unique.sort(key=lambda item: (item[0], -item[1].stat().st_mtime))
-    return [path for _priority, path in unique]
 
 
 def _load_realtime_partial_curve(

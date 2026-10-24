@@ -1,7 +1,6 @@
 import os
 import csv
 import json
-import glob
 import pickle
 import re
 import tkinter as tk
@@ -29,7 +28,6 @@ from read import read_sensors, read_devices
 from device import devices
 from app.hardware import real_sensors
 from app.ui.theme import apply_theme_tree, get_widget_theme_mode, set_theme_role
-from models import Sensor, Device
 
 plt.rcParams.update({
     "axes.titlesize": 16,
@@ -75,39 +73,6 @@ def _resolve_llm_path(value: str | None) -> str:
             if variant.exists():
                 return str(variant)
     return str(candidates[0])
-
-
-def _discover_selected_case_csv(appliance_key: str) -> str | None:
-    """Find selected_case_latest_incomplete_day.csv for the appliance, tolerant to folder typos."""
-    if not appliance_key:
-        return None
-
-    # Generic search first: robust to naming variants (e.g. Computer vs Computerr).
-    pattern = os.path.join(
-        "LLM",
-        "smartmeter",
-        "*",
-        "*",
-        "selected_case_latest_incomplete_day.csv",
-    )
-    candidates = sorted(glob.glob(pattern))
-
-    # Prefer paths that contain the appliance key text.
-    key_tokens = {
-        "computer": ["computer"],
-        "coffee_machine": ["coffee", "machine"],
-        "dishwasher": ["dishwasher"],
-        "refrigerator": ["refrigerator", "fridge"],
-        "washing_machine": ["washing", "machine"],
-    }.get(appliance_key, [appliance_key])
-
-    for p in candidates:
-        low = p.replace("\\", "/").lower()
-        if all(tok in low for tok in key_tokens):
-            return p
-
-    # Do not fall back to an unrelated appliance.
-    return None
 
 
 def _load_llm_profiles(path: str = _LLM_PROFILE_PATH) -> dict:
@@ -1002,16 +967,6 @@ def _get_binding_gpio(sensor_name: str, expected_kind: str | None = None) -> tup
         return int(v.get("gpio")), kind
     except Exception:
         return None
-
-
-def _get_binding_ip(sensor_name: str) -> str | None:
-    """Get IP binding for smart meter sensor"""
-    mp = _load_sensor_map()
-    v = mp.get(sensor_name)
-    if isinstance(v, dict) and v.get("by") == "ip" and isinstance(v.get("value"), str):
-        ip = v["value"].strip()
-        return ip if ip else None
-    return None
 
 
 def _align_real_series_to_simulation(df_real: pd.DataFrame, df_sim: pd.DataFrame) -> pd.DataFrame:

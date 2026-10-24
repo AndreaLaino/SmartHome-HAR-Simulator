@@ -222,16 +222,6 @@ def zoom_out(canvas, *, screen_x=None, screen_y=None) -> float:
     return set_zoom(canvas, get_zoom(canvas) / ZOOM_STEP, screen_x=screen_x, screen_y=screen_y)
 
 
-def zoom_trackpad(canvas, direction: int, *, screen_x: float, screen_y: float) -> float:
-    factor = TRACKPAD_ZOOM_STEP if direction > 0 else 1.0 / TRACKPAD_ZOOM_STEP
-    return set_zoom(
-        canvas,
-        get_zoom(canvas) * factor,
-        screen_x=screen_x,
-        screen_y=screen_y,
-    )
-
-
 def queue_trackpad_zoom(
     canvas,
     direction: int,
