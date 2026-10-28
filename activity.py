@@ -75,7 +75,7 @@ def _learned_activity_text(result):
         text = "Activities (ML): " + activities
         confidence = result.get("confidence")
         if confidence is not None:
-            text += f" · model confidence {confidence:.0%} (uncalibrated)"
+            text += f"\nModel confidence: {confidence:.0%} (uncalibrated)"
         return text
     if status == "no_model":
         return "Activity recognition: no trained model · record labelled examples and train a model"

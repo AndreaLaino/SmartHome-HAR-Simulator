@@ -28,9 +28,9 @@ def _frame(rng, target, now, *, cooking=False, relaxing=False, unattended=False,
     devices = []
     for name, kind, x, rated, state, watts, categories in (
             (food_name, food_type, 90, food_rating, food_on, food_power,
-             ["DeviceCooking", "DeviceDefrosting"] if target else ["DeviceCooking"]),
+             ["Device_Cooking", "Device_Defrosting"] if target else ["Device_Cooking"]),
             (media_name, media_type, 390, media_rating, relaxing, media_power,
-             ["DeviceEntertainment", "DeviceInteractive"] if target else ["DeviceEntertainment"])):
+             ["Device_Entertainment", "Device_Interactive"] if target else ["Device_Entertainment"])):
         devices.append({"name": name, "type": kind, "x": x, "y": 80, "state": int(state),
                         "power": rated, "min_consumption": 0, "max_consumption": rated,
                         "current_consumption": watts, "categories": categories})
@@ -40,13 +40,13 @@ def _frame(rng, target, now, *, cooking=False, relaxing=False, unattended=False,
         sensors.append({"name": name, "type": "Smart Meter", "x": device["x"], "y": 80,
                         "min_val": 0, "max_val": device["power"], "state": device["current_consumption"],
                         "consumption": device["current_consumption"], "associated_device": device["name"],
-                        "categories": ["SensorPower"]})
+                        "categories": ["Sensor_Power"]})
         observations[name] = {"state": [device["current_consumption"]], "consumption": [device["current_consumption"]]}
     for location, x, value in (("kitchen", 100, kitchen_presence), ("living", 400, living_presence)):
         name = f"{prefix}_{location}_motion"
         sensors.append({"name": name, "type": "PIR", "x": x, "y": 100, "min_val": 0, "max_val": 1,
                         "state": value, "consumption": None, "associated_device": None,
-                        "categories": ["SensorPresence"]})
+                        "categories": ["Sensor_Presence"]})
         observations[name] = {"state": [value]}
     return {"time_seconds": now, "devices": devices, "sensors": sensors, "sensor_states": observations,
             "rooms": [{"room_type": "Kitchen", "polygon": [[0, 0], [250, 0], [250, 250], [0, 250]]},
@@ -63,8 +63,8 @@ def demo_sessions(sessions_per_house=5, seed=42):
         house_id = "demo-target" if target else "demo-source"
         dictionary = default_catalogue()
         if target:
-            dictionary["device_categories"].update(DeviceDefrosting="Equipment capable of defrosting food.",
-                                                    DeviceInteractive="Equipment with interactive controls.")
+            dictionary["device_categories"].update(Device_Defrosting="Equipment capable of defrosting food.",
+                                                    Device_Interactive="Equipment with interactive controls.")
         for index in range(sessions_per_house):
             rng = random.Random(seed + index * 101 + (10000 if target else 0))
             phases = [(False, False, False, False), (True, False, False, False),

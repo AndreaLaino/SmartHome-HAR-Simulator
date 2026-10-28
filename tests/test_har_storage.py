@@ -39,77 +39,157 @@ class CategoryStorageTests(unittest.TestCase):
             }],
         }
 
+    def legacy_dictionary(self):
+        return {
+            "schema_version": 1,
+            "device_categories": {"DeviceCooking": "Custom food preparation description."},
+            "sensor_categories": {
+                "SensorPower": {"description": "House meter.", "measurement": "power", "unit": "W"},
+            },
+            "device_types": {"Oven": ["DeviceCooking"], "Unclassified appliance": []},
+            "sensor_types": {"Smart Meter": ["SensorPower"], "Unclassified sensor": []},
+        }
+
     def test_categories_are_reused_across_types_without_assigning_activities(self):
         dictionary = catalogue.default_catalogue()
         oven = Device("different name", 0, 0, "Oven", 100, 0, 0, 100)
         microwave = Device("appliance b", 0, 0, "Microwave", 100, 0, 0, 100)
-        self.assertEqual(catalogue.categories_for(oven, "device", dictionary), ["DeviceCooking"])
-        self.assertEqual(catalogue.categories_for(microwave, "device", dictionary), ["DeviceCooking"])
+        self.assertEqual(catalogue.categories_for(oven, "device", dictionary), ["Device_Cooking"])
+        self.assertEqual(catalogue.categories_for(microwave, "device", dictionary), ["Device_Cooking"])
         self.assertNotIn("activities", dictionary)
         self.assertEqual(catalogue.categories_for({"type": "computer"}, "device", dictionary), [
-            "DeviceComputer", "DeviceEntertainment",
+            "Device_Computer", "Device_Entertainment",
         ])
 
     def test_explicit_empty_and_multiple_categories_override_type_defaults(self):
         dictionary = catalogue.default_catalogue()
         device = Device("oven", 0, 0, "Oven", 100, 0, 0, 100, categories=[])
         self.assertEqual(catalogue.categories_for(device, "device", dictionary), [])
-        device.categories = ["DeviceCooking", "DeviceComputer", "DeviceCooking"]
-        self.assertEqual(catalogue.categories_for(device, "device", dictionary), ["DeviceCooking", "DeviceComputer"])
+        device.categories = ["Device_Cooking", "Device_Computer", "Device_Cooking"]
+        self.assertEqual(catalogue.categories_for(device, "device", dictionary), ["Device_Cooking", "Device_Computer"])
         self.assertEqual(catalogue.categories_for({"type": "Unknown"}, "device", dictionary), [])
-        self.assertEqual(catalogue.categories_for({"type": "PIR"}, "sensor", dictionary), ["SensorPresence"])
+        self.assertEqual(catalogue.categories_for({"type": "PIR"}, "sensor", dictionary), ["Sensor_Presence"])
+
+    def test_old_and_new_explicit_categories_resolve_against_the_requested_dictionary(self):
+        current = catalogue.default_catalogue()
+        frozen = self.legacy_dictionary()
+        before = json.loads(json.dumps(frozen))
+        for kind, old_name, new_name in (
+            ("device", "DeviceCooking", "Device_Cooking"),
+            ("sensor", "SensorPower", "Sensor_Power"),
+        ):
+            with self.subTest(kind=kind):
+                self.assertEqual(catalogue.categories_for(
+                    {"categories": [old_name, new_name]}, kind, current,
+                ), [new_name])
+                self.assertEqual(catalogue.categories_for(
+                    {"categories": [new_name, old_name]}, kind, frozen,
+                ), [old_name])
+        self.assertEqual(catalogue.validate_catalogue(frozen), before)
+        self.assertEqual(frozen, before)
+
+    def test_loading_legacy_shared_dictionary_upgrades_names_without_losing_customization(self):
+        dictionary = self.legacy_dictionary()
+        dictionary["device_categories"]["DeviceInstrument"] = "A custom category, not a built-in alias."
+        dictionary["device_types"]["Piano"] = ["DeviceInstrument"]
+        dictionary["sensor_categories"]["SensorPower"]["unit"] = "kW"
+        dictionary["sensor_categories"]["SensorHumidity"] = {
+            "description": "Relative humidity.", "measurement": "generic", "unit": "%",
+        }
+        dictionary["sensor_types"]["Humidity"] = ["SensorHumidity"]
+        path = storage.ensure_data() / "catalogue.json"
+        storage.atomic_json(path, dictionary)
+
+        upgraded = catalogue.load_catalogue()
+
+        self.assertEqual(upgraded["device_categories"], {
+            "Device_Cooking": "Custom food preparation description.",
+            "DeviceInstrument": "A custom category, not a built-in alias.",
+        })
+        self.assertEqual(upgraded["sensor_categories"], {
+            "Sensor_Power": {"description": "House meter.", "measurement": "power", "unit": "kW"},
+            "SensorHumidity": {"description": "Relative humidity.", "measurement": "generic", "unit": "%"},
+        })
+        self.assertEqual(upgraded["device_types"], {
+            "Oven": ["Device_Cooking"], "Unclassified appliance": [], "Piano": ["DeviceInstrument"],
+        })
+        self.assertEqual(upgraded["sensor_types"], {
+            "Smart Meter": ["Sensor_Power"], "Unclassified sensor": [], "Humidity": ["SensorHumidity"],
+        })
+        self.assertEqual(storage.read_json(path), upgraded)
+        self.assertEqual(catalogue.load_catalogue(), upgraded)
+
+    def test_conflicting_legacy_and_current_shared_definitions_do_not_replace_the_file(self):
+        path = storage.ensure_data() / "catalogue.json"
+        for kind in ("device", "sensor"):
+            with self.subTest(kind=kind):
+                dictionary = self.legacy_dictionary()
+                if kind == "device":
+                    dictionary["device_categories"]["Device_Cooking"] = "A different definition."
+                else:
+                    dictionary["sensor_categories"]["Sensor_Power"] = {
+                        "description": "House meter.", "measurement": "power", "unit": "kW",
+                    }
+                storage.atomic_json(path, dictionary)
+                before = path.read_bytes()
+                with self.assertRaises(ValueError):
+                    catalogue.load_catalogue()
+                self.assertEqual(path.read_bytes(), before)
+                with self.assertRaises(ValueError):
+                    catalogue.save_catalogue(dictionary)
+                self.assertEqual(path.read_bytes(), before)
 
     def test_unknown_categories_and_wrong_kind_are_rejected(self):
         dictionary = catalogue.default_catalogue()
-        for values, kind in ((["cooking"], "device"), (["DeviceCooking"], "sensor"), ("DeviceCooking", "device")):
+        for values, kind in ((["cooking"], "device"), (["Device_Cooking"], "sensor"), ("Device_Cooking", "device")):
             with self.subTest(values=values, kind=kind), self.assertRaises(ValueError):
                 catalogue.validate_categories(values, kind, dictionary)
 
     def test_shared_dictionary_customization_round_trips(self):
         dictionary = catalogue.load_catalogue()
-        dictionary["device_categories"]["DeviceInstrument"] = "Musical instrument."
-        dictionary["device_types"]["Piano"] = ["DeviceInstrument"]
+        dictionary["device_categories"]["Device_Instrument"] = "Musical instrument."
+        dictionary["device_types"]["Piano"] = ["Device_Instrument"]
         catalogue.save_catalogue(dictionary)
         reloaded = catalogue.load_catalogue()
-        self.assertEqual(catalogue.categories_for({"type": "Piano"}, "device", reloaded), ["DeviceInstrument"])
+        self.assertEqual(catalogue.categories_for({"type": "Piano"}, "device", reloaded), ["Device_Instrument"])
         self.assertEqual(set(path.name for path in storage.DATA_DIR.iterdir()), {"catalogue.json", "models", "sessions", "reports"})
-        self.assertEqual(reloaded["sensor_categories"]["SensorPower"]["unit"], "W")
-        self.assertEqual(reloaded["sensor_categories"]["SensorWeight"]["unit"], "configured")
+        self.assertEqual(reloaded["sensor_categories"]["Sensor_Power"]["unit"], "W")
+        self.assertEqual(reloaded["sensor_categories"]["Sensor_Weight"]["unit"], "configured")
 
     def test_invalid_measurements_and_ambiguous_type_names_are_rejected(self):
         dictionary = catalogue.default_catalogue()
-        dictionary["sensor_categories"]["SensorPower"]["measurement"] = "activity"
+        dictionary["sensor_categories"]["Sensor_Power"]["measurement"] = "activity"
         with self.assertRaises(ValueError):
             catalogue.save_catalogue(dictionary)
         dictionary = catalogue.default_catalogue()
-        dictionary["device_types"]["oven"] = ["DeviceCleaning"]
+        dictionary["device_types"]["oven"] = ["Device_Cleaning"]
         with self.assertRaises(ValueError):
             catalogue.save_catalogue(dictionary)
 
     def test_category_compatibility_rejects_different_physical_meanings(self):
         source = catalogue.default_catalogue()
         target = catalogue.default_catalogue()
-        target["sensor_categories"]["SensorPower"]["description"] = "Another meter."
-        target["sensor_categories"]["SensorExtra"] = {
+        target["sensor_categories"]["Sensor_Power"]["description"] = "Another meter."
+        target["sensor_categories"]["Sensor_Extra"] = {
             "description": "Target-only reading.", "measurement": "generic", "unit": "configured",
         }
         catalogue.validate_catalogue_compatibility(source, target)
-        target["sensor_categories"]["SensorPower"]["unit"] = "kW"
-        with self.assertRaisesRegex(ValueError, "SensorPower.*unit"):
+        target["sensor_categories"]["Sensor_Power"]["unit"] = "kW"
+        with self.assertRaisesRegex(ValueError, "Sensor_Power.*unit"):
             catalogue.validate_catalogue_compatibility(source, target)
         target = catalogue.default_catalogue()
-        target["sensor_categories"]["SensorPower"]["measurement"] = "temperature"
-        with self.assertRaisesRegex(ValueError, "SensorPower.*measurement"):
+        target["sensor_categories"]["Sensor_Power"]["measurement"] = "temperature"
+        with self.assertRaisesRegex(ValueError, "Sensor_Power.*measurement"):
             catalogue.validate_catalogue_compatibility(source, target)
 
     def test_sessions_preserve_frozen_dictionary_and_label_semantics(self):
         session = self.session()
         storage.save_session(session)
         dictionary = catalogue.load_catalogue()
-        dictionary["device_types"]["Oven"] = ["DeviceCleaning"]
+        dictionary["device_types"]["Oven"] = ["Device_Cleaning"]
         catalogue.save_catalogue(dictionary)
         self.assertEqual(storage.list_sessions(), [session])
-        self.assertEqual(storage.list_sessions()[0]["catalogue"]["device_types"]["Oven"], ["DeviceCooking"])
+        self.assertEqual(storage.list_sessions()[0]["catalogue"]["device_types"]["Oven"], ["Device_Cooking"])
 
     def test_non_finite_data_does_not_replace_existing_json(self):
         path = self.root / "existing.json"
@@ -226,22 +306,40 @@ class HARScenarioTests(unittest.TestCase):
         ctx = AppContext(window=None, load_active=True)
         ctx.har_config.update(house_label="House A", model_id="model-1")
         ctx.read_devices = [
-            Device("oven", 0, 0, "Oven", 2000, 0, 0, 2000, categories=["DeviceCooking", "DeviceComputer"]),
+            Device("oven", 0, 0, "Oven", 2000, 0, 0, 2000, categories=["Device_Cooking", "Device_Computer"]),
             Device("lamp", 5, 5, "Smart Light", 10, 0, 0, 10, light_control="automatic",
                    light_switches=[LightSwitch("wall switch", 100, 50, "lamp")], categories=[]),
             Device("other", 10, 10, "Microwave", 1000, 0, 0, 1000),
         ]
-        ctx.read_sensors = [Sensor("pir", 0, 0, "PIR", 0, 1, 1, 0, categories=["SensorPresence"])]
+        ctx.read_sensors = [Sensor("pir", 0, 0, "PIR", 0, 1, 1, 0, categories=["Sensor_Presence"])]
         path = self.root / "house.csv"
         path.write_text(scenario._serialize_scenario(ctx), encoding="utf-8")
         _, _, sensors, devices, _ = read.read_coordinates_from_file(path)
         self.assertEqual(read.read_har_config, ctx.har_config)
-        self.assertEqual(devices[0].categories, ["DeviceCooking", "DeviceComputer"])
+        self.assertEqual(devices[0].categories, ["Device_Cooking", "Device_Computer"])
         self.assertEqual(devices[1].categories, [])
         self.assertIsNone(devices[2].categories)
-        self.assertEqual(sensors[0].categories, ["SensorPresence"])
+        self.assertEqual(sensors[0].categories, ["Sensor_Presence"])
         self.assertEqual(devices[1].light_control, "automatic")
         self.assertEqual(devices[1].light_switches, ctx.read_devices[1].light_switches)
+
+    def test_legacy_csv_explicit_categories_remain_usable_with_current_dictionary(self):
+        ctx = AppContext(window=None, load_active=True)
+        ctx.read_devices = [Device(
+            "old oven", 0, 0, "Oven", 2000, 0, 0, 2000, categories=["DeviceCooking"],
+        )]
+        ctx.read_sensors = [Sensor(
+            "old meter", 0, 0, "Smart Meter", 0, 2000, 1, 0,
+            associated_device="old oven", categories=["SensorPower"],
+        )]
+        path = self.root / "legacy-categories.csv"
+        path.write_text(scenario._serialize_scenario(ctx), encoding="utf-8")
+
+        _, _, sensors, devices, _ = read.read_coordinates_from_file(path)
+
+        dictionary = catalogue.default_catalogue()
+        self.assertEqual(catalogue.categories_for(devices[0], "device", dictionary), ["Device_Cooking"])
+        self.assertEqual(catalogue.categories_for(sensors[0], "sensor", dictionary), ["Sensor_Power"])
 
     def test_load_restores_saved_identity_and_legacy_load_creates_a_new_one(self):
         config = storage.new_house_config()

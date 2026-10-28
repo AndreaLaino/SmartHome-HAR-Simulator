@@ -31,7 +31,7 @@ class LearnedActivityFlowTests(unittest.TestCase):
             get_simulated_time=Mock(return_value="12:03"),
         )
         self.oven = Device("oven", 10, 0, "Oven", 2000, 1, 1500, 2000)
-        self.oven.categories = ["DeviceCooking"]
+        self.oven.categories = ["Device_Cooking"]
         self.sources = {
             "devices": [self.oven], "sensors": [], "points": [],
             "rooms": [], "walls": [], "doors": [],

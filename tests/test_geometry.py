@@ -1,4 +1,5 @@
 import unittest
+from unittest.mock import patch
 
 from canvas_zoom import (
     bind_canvas_pan,
@@ -13,7 +14,6 @@ from canvas_zoom import (
 )
 from models import Device, Door, Sensor, Wall
 from utils import (
-    PIR_FOV_ANGLE,
     PIR_FOV_TAG,
     draw_pir_fov,
     find_closest_sensor_within_fov,
@@ -23,6 +23,7 @@ from utils import (
     is_path_blocked_by_walls,
     is_within_fov,
     set_pir_fov_transparency,
+    refresh_pir_fov,
 )
 
 
@@ -82,118 +83,108 @@ class GeometryTests(unittest.TestCase):
             [1],
         )
 
+    class FOVCanvas:
+        _zoom_factor = 1.0
+        _show_pir_fov = True
+
+        def __init__(self, transparency=50):
+            self._pir_fov_transparency = transparency
+            self.images = []
+            self.raise_calls = []
+
+        def create_image(self, *position, **options):
+            self.images.append((position, options))
+            return len(self.images)
+
+        def tag_raise(self, *args):
+            self.raise_calls.append(args)
+
+        def delete(self, _tag):
+            self.images.clear()
+
+    class Photo:
+        def __init__(self, image, **_options):
+            self.image = image.copy()
+
+        def paste(self, image):
+            self.image = image.copy()
+
+    def render_fov(self, pir, walls=(), doors=(), transparency=50):
+        canvas = self.FOVCanvas(transparency)
+        with patch("utils.ImageTk.PhotoImage", side_effect=self.Photo):
+            draw_pir_fov(canvas, pir, walls, doors)
+        return canvas
+
+    def fov_pixel(self, canvas, x, y):
+        (left, top), options = canvas.images[0]
+        image = options["image"].image
+        x, y = round(x - left), round(y - top)
+        if 0 <= x < image.width and 0 <= y < image.height:
+            return image.getpixel((x, y))
+        return (0, 0, 0, 0)
+
     def test_pir_fov_uses_sensor_direction_and_simulation_range(self):
-        class Canvas:
-            _zoom_factor = 1.0
-
-            def __init__(self):
-                self.polygons = []
-                self.raise_calls = []
-
-            def create_polygon(self, *points, **kwargs):
-                self.polygons.append((points, kwargs))
-
-            def tag_raise(self, *args):
-                self.raise_calls.append(args)
-
-        canvas = Canvas()
         pir = make_sensor("pir", "PIR", 10, 20, direction=0)
-        draw_pir_fov(canvas, pir)
-
-        points, options = canvas.polygons[0]
-        self.assertEqual(points[:2], (10.0, 20.0))
-        self.assertEqual(options["tags"], (PIR_FOV_TAG, "pir_fov"))
+        canvas = self.render_fov(pir)
+        self.assertGreater(self.fov_pixel(canvas, 110, 20)[3], 0)
+        self.assertGreater(self.fov_pixel(canvas, 239, 20)[3], 0)
+        self.assertEqual(self.fov_pixel(canvas, 241, 20)[3], 0)
+        self.assertEqual(self.fov_pixel(canvas, 0, 20)[3], 0)
+        self.assertEqual(self.fov_pixel(canvas, 110, 90)[3], 0)
+        self.assertEqual(canvas.images[0][1]["tags"], (PIR_FOV_TAG, "pir_fov"))
         self.assertEqual(canvas.raise_calls, [(PIR_FOV_TAG, "background_grid")])
+        pir.direction = 90
+        rotated = self.render_fov(pir)
+        self.assertGreater(self.fov_pixel(rotated, 10, 120)[3], 0)
+        self.assertEqual(self.fov_pixel(rotated, 110, 20)[3], 0)
 
     def test_pir_fov_is_clipped_at_wall(self):
-        class Canvas:
-            _zoom_factor = 1.0
-
-            def __init__(self):
-                self.polygons = []
-
-            def create_polygon(self, *points, **kwargs):
-                self.polygons.append((points, kwargs))
-
-            def tag_raise(self, *_args):
-                pass
-
-        canvas = Canvas()
         pir = make_sensor("pir", "PIR", 0, 0, direction=0)
-        wall = Wall(10, -100, 10, 100)
-        draw_pir_fov(canvas, pir, [wall], [])
-
-        points, _options = canvas.polygons[0]
-        center_ray_offset = 2 + (PIR_FOV_ANGLE // 2) * 2
-        self.assertAlmostEqual(points[center_ray_offset], 10.0)
-        self.assertAlmostEqual(points[center_ray_offset + 1], 0.0)
+        canvas = self.render_fov(pir, [Wall(10, -100, 10, 100)])
+        self.assertGreater(self.fov_pixel(canvas, 9, 0)[3], 0)
+        self.assertEqual(self.fov_pixel(canvas, 11, 0)[3], 0)
 
     def test_pir_fov_is_clipped_only_by_closed_doors(self):
-        class Canvas:
-            _zoom_factor = 1.0
-
-            def __init__(self):
-                self.polygons = []
-
-            def create_polygon(self, *points, **kwargs):
-                self.polygons.append((points, kwargs))
-
-            def tag_raise(self, *_args):
-                pass
-
         pir = make_sensor("pir", "PIR", 0, 0, direction=0)
-        center_ray_offset = 2 + (PIR_FOV_ANGLE // 2) * 2
+        closed = self.render_fov(pir, doors=[Door(10, -100, 10, 100, "close")])
+        opened = self.render_fov(pir, doors=[Door(10, -100, 10, 100, "open")])
+        self.assertEqual(self.fov_pixel(closed, 20, 0)[3], 0)
+        self.assertGreater(self.fov_pixel(opened, 20, 0)[3], 0)
 
-        closed_canvas = Canvas()
-        draw_pir_fov(closed_canvas, pir, [], [Door(10, -100, 10, 100, "close")])
-        self.assertAlmostEqual(
-            closed_canvas.polygons[0][0][center_ray_offset],
-            10.0,
-        )
-
-        open_canvas = Canvas()
-        draw_pir_fov(open_canvas, pir, [], [Door(10, -100, 10, 100, "open")])
-        self.assertAlmostEqual(
-            open_canvas.polygons[0][0][center_ray_offset],
-            230.0,
-        )
-
-    def test_pir_fov_transparency_uses_supported_stipple(self):
-        class Canvas:
-            _zoom_factor = 1.0
-            _pir_fov_transparency = 75
-
-            def __init__(self):
-                self.polygons = []
-
-            def create_polygon(self, *points, **kwargs):
-                self.polygons.append((points, kwargs))
-
-            def tag_raise(self, *_args):
-                pass
-
-        canvas = Canvas()
-        pir = make_sensor("pir", "PIR", 0, 0, direction=0)
-        draw_pir_fov(canvas, pir)
-
-        self.assertEqual(canvas.polygons[0][1]["stipple"], "gray25")
+    def test_pir_transparency_is_continuous_and_fully_clears_fill_and_outline(self):
+        canvas = self.render_fov(make_sensor("pir", "PIR", 0, 0, direction=0), transparency=0)
+        photo = canvas.images[0][1]["image"]
+        alphas = []
+        for transparency in range(101):
+            set_pir_fov_transparency(canvas, transparency)
+            alphas.append(self.fov_pixel(canvas, 100, 0)[3])
+        self.assertEqual((alphas[0], alphas[50], alphas[75], alphas[100]), (255, 128, 64, 0))
+        self.assertTrue(all(before > after for before, after in zip(alphas, alphas[1:])))
+        self.assertEqual(photo.image.getchannel("A").getextrema(), (0, 0))
+        set_pir_fov_transparency(canvas, 0)
+        self.assertEqual(self.fov_pixel(canvas, 100, 0), (255, 231, 163, 255))
+        self.assertEqual(self.fov_pixel(canvas, 100, 100)[3], 0)
+        self.assertEqual(len(canvas.images), 1)  # Slider changes reuse the same image and geometry.
 
     def test_pir_fov_transparency_keeps_exact_slider_value(self):
-        class Canvas:
-            _show_pir_fov = False
-
-            def __init__(self):
-                self.configured = []
-
-            def itemconfigure(self, *args, **kwargs):
-                self.configured.append((args, kwargs))
-
-        canvas = Canvas()
+        canvas = self.FOVCanvas()
         selected = set_pir_fov_transparency(canvas, 68)
-
         self.assertEqual(selected, 68)
         self.assertEqual(canvas._pir_fov_transparency, 68)
-        self.assertEqual(canvas.configured[0][0], (PIR_FOV_TAG,))
+
+    def test_pir_refresh_replaces_image_references_and_hiding_releases_them(self):
+        canvas = self.FOVCanvas()
+        canvas._pir_fov_sensors = [make_sensor("pir", "PIR", 0, 0, direction=0)]
+        with patch("utils.ImageTk.PhotoImage", side_effect=self.Photo):
+            refresh_pir_fov(canvas)
+            before = canvas.images[0][1]["image"]
+            refresh_pir_fov(canvas)
+            self.assertEqual(len(canvas._pir_fov_images), 1)
+            self.assertIsNot(canvas.images[0][1]["image"], before)
+            canvas._show_pir_fov = False
+            refresh_pir_fov(canvas)
+        self.assertEqual(canvas.images, [])
+        self.assertEqual(canvas._pir_fov_images, {})
 
 
 class CanvasZoomTests(unittest.TestCase):

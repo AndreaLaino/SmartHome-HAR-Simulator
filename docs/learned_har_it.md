@@ -2,7 +2,7 @@
 
 Il dizionario descrive **che cosa sono gli oggetti**. Il modello impara **quali
 attività corrispondono alle osservazioni**. Forno e microonde possono avere la
-stessa categoria `DeviceCooking`, ma questa categoria, da sola, non avvia
+stessa categoria `Device_Cooking`, ma questa categoria, da sola, non avvia
 «cooking». Senza un modello addestrato e attivato non vengono prodotte attività
 apprese.
 
@@ -16,8 +16,8 @@ schede: **1 · Categories**, **2 · Record sessions**, **3 · Train & evaluate**
    La cucina contiene `source_oven`; il soggiorno contiene `source_tv`.
    Ogni stanza ha un PIR e uno Smart Meter collegato al dispositivo.
 2. Apri **Scenario → Learned activity recognition…**. In **Categories** controlla
-   `DeviceCooking` per il forno, `DeviceEntertainment` per la TV,
-   `SensorPresence` per i PIR e `SensorPower` per i contatori.
+   `Device_Cooking` per il forno, `Device_Entertainment` per la TV,
+   `Sensor_Presence` per i PIR e `Sensor_Power` per i contatori.
 3. In **Train & evaluate**, premi **Add synthetic demo sessions**. Vengono
    aggiunte sessioni generate da uno script per la casa `demo-source` e per
    `demo-target`. Non sono registrazioni della casa aperta.
@@ -47,8 +47,10 @@ aperta. Premerlo nuovamente sostituisce le stesse sessioni dimostrative.
 
 Negli esempi tutti i dispositivi partono spenti e nessun modello è preattivato.
 Le etichette delle stanze sono salvate esplicitamente. Microonde, TV e console
-usano un carico simulato costante finché non viene fornito un profilo specifico;
-non sono misure realistiche di un particolare prodotto.
+hanno profili predefiniti illustrativi in `consumption_profiles.py` e rimangono
+accesi fino allo spegnimento manuale. Il tostapane termina automaticamente il
+proprio ciclo, impostato a tre minuti simulati. Questi profili non sono misure
+reali di un particolare prodotto.
 
 ## Registrare una prova propria
 
@@ -72,6 +74,12 @@ In **Categories**, seleziona un oggetto e scegli una o più categorie:
 Nessuna categoria selezionata significa oggetto non classificato. Un computer
 può avere più categorie contemporaneamente. Non si seleziona un'attività da
 trasferire tra dispositivi.
+
+Le categorie predefinite usano i prefissi `Device_` e `Sensor_`, ad esempio
+`Device_Cooking` e `Sensor_Presence`. I vecchi nomi senza `_` restano leggibili:
+il dizionario condiviso viene aggiornato conservando le personalizzazioni.
+Registrazioni e modelli già salvati mantengono il proprio dizionario e schema;
+le osservazioni equivalenti vengono adattate ai loro nomi senza riaddestrarli.
 
 ### 2. Sessioni della casa sorgente
 

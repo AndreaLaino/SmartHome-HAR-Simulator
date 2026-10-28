@@ -256,9 +256,14 @@ def start_sim(ctx: AppContext):
 
     if not hasattr(ctx, 'activity_label') or ctx.activity_label is None:
         ctx.activity_label = tk.Label(
-            ctx.activity_frame, text="Activity: None", font=("Helvetica", 16), bg="white", fg="black"
+            ctx.activity_frame, text="Activity: None", font=("Helvetica", 14), bg="white", fg="black",
+            wraplength=360, justify=tk.LEFT, anchor="w",
         )
-        ctx.activity_label.pack(pady=15, padx=10, fill=tk.BOTH, expand=True)
+        ctx.activity_label.pack(pady=2, padx=10, fill=tk.BOTH, expand=True)
+        ctx.activity_label.bind(
+            "<Configure>",
+            lambda event: event.widget.configure(wraplength=max(1, event.width - 12)),
+        )
 
     apply_theme = getattr(ctx, "_apply_theme", None)
     if callable(apply_theme):

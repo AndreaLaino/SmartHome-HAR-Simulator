@@ -37,10 +37,10 @@ class SimulatorWorkflowTests(unittest.TestCase):
                     "time_seconds": tick * (60 + index), "labels": ["laundry"] if active else [],
                     "devices": [{"name": "source_washer", "type": "Washing_Machine", "state": int(active),
                                  "power": 1000, "max_consumption": 1000, "current_consumption": watts,
-                                 "categories": ["DeviceCleaning"]}],
+                                 "categories": ["Device_Cleaning"]}],
                     "sensors": [{"name": "source_meter", "type": "Smart Meter", "min_val": 0, "max_val": 1000,
                                  "state": int(active), "consumption": watts, "associated_device": "source_washer",
-                                 "categories": ["SensorPower"]}],
+                                 "categories": ["Sensor_Power"]}],
                     "sensor_states": {"source_meter": {"state": [int(active)], "consumption": [watts]}},
                     "rooms": [],
                 })

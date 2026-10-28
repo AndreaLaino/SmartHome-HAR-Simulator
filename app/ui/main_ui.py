@@ -450,7 +450,7 @@ def build_home_ui(ctx: AppContext):
         tk.Frame(right_container, bg="lightgrey", width=400, height=150),
         "panel",
     )
-    activity_container.pack(side=tk.BOTTOM, fill=tk.X, expand=False, padx=10, pady=10)
+    activity_container.pack(side=tk.BOTTOM, fill=tk.X, expand=False, padx=10, pady=2)
     activity_container.pack_propagate(False)
     ctx.activity_frame = activity_container
 

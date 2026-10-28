@@ -505,6 +505,51 @@ class SimulationTickTests(unittest.TestCase):
         self.assertEqual(self.state.sensor_states()["meter"]["state"], [0.0])
         self.assertEqual(self.state.active_cycles(), {})
 
+    def test_target_profiles_complete_fifteen_minute_advance_and_record_every_step(self):
+        from pathlib import Path
+        from tempfile import TemporaryDirectory
+        from device import get_device_params
+        from har import storage
+        from har.runtime import finish_recording, set_recording_labels, start_recording
+
+        appliances = []
+        for kind in ("Microwave", "Toaster", "TV", "PlayStation"):
+            params = get_device_params(kind)
+            appliance = Device(kind, 0, 0, kind, params["power"], 1,
+                               params["min_consumption"], params["max_consumption"])
+            appliances.append(appliance)
+            self.state.active_cycles()[kind] = {"start_time": self.timer.simulated_start_time, "cycle_type": kind}
+        meters = [make_sensor(f"meter_{item.name}", "Smart Meter", device=item.name) for item in appliances]
+        runtime = sources(devices=appliances, sensors=meters)
+        config = storage.new_house_config()
+        runtime["har_config"] = config
+        ctx = SimpleNamespace(house_state=self.state, har_config=config)
+
+        def advance_step(delta):
+            self.tick(runtime, schedule_next=False, force=True, delta_override=delta, fast=True)
+            activity.process_activities(None, self.timer, self.state.sensor_states(), self.state, runtime)
+
+        with TemporaryDirectory() as temp, patch.object(storage, "DATA_DIR", Path(temp)):
+            session = start_recording(ctx, partition="target")
+            set_recording_labels(ctx, ["cooking"])
+            self.timer.on_advance_step = advance_step
+            self.timer.advance_time()
+            self.assertEqual(self.timer.get_simulated_time(), "12:15")
+            self.assertEqual(len(session["frames"]), 15)
+            self.assertEqual(session["frames"][-1]["time_seconds"], 900)
+            self.assertEqual(session["frames"][-1]["sensor_states"]["meter_Microwave"]["consumption"], [1000])
+            for appliance in appliances:
+                self.assertEqual(appliance.state, 0 if appliance.type == "Toaster" else 1)
+            path = finish_recording(self.state)
+            self.assertEqual(len(storage.read_json(path)["frames"]), 15)
+            for appliance in appliances:
+                if appliance.state:
+                    sim.toggle_device_state(None, None, self.state, self.timer, runtime,
+                                            x=0, y=0, target_device=appliance, render=False)
+            self.tick(runtime, schedule_next=False, force=True)
+            self.assertTrue(all(item.current_consumption == 0 for item in appliances))
+            self.assertTrue(all(item.consumption == 0 for item in meters))
+
     def test_paused_tick_leaves_sensor_and_device_state_untouched(self):
         self.timer.is_running = False
         oven = make_device()
@@ -801,7 +846,7 @@ class ManualInteractionTests(unittest.TestCase):
 
 class DeviceCycleLifecycleTests(unittest.TestCase):
     def test_noncontinuous_devices_stop_at_the_profile_endpoint(self):
-        for device_type in ("Washing_Machine", "Dishwasher", "Coffee_Machine"):
+        for device_type in ("Washing_Machine", "Dishwasher", "Coffee_Machine", "Toaster"):
             with self.subTest(device_type=device_type):
                 started = datetime(2026, 2, 28, 12)
                 timer = make_timer(start=started)
@@ -836,7 +881,7 @@ class DeviceCycleLifecycleTests(unittest.TestCase):
 
     def test_continuous_devices_remain_on_after_a_profile_finishes(self):
         started = datetime(2026, 2, 28, 12)
-        for device_type in ("Fridge", "Computer", "Oven"):
+        for device_type in ("Fridge", "Computer", "Oven", "Microwave", "TV", "PlayStation"):
             with self.subTest(device_type=device_type):
                 timer = make_timer(start=started)
                 timer.elapsed_time = timedelta(seconds=400)

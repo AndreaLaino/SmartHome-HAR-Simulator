@@ -8,62 +8,71 @@ from har import storage
 
 
 MEASUREMENTS = {"presence", "power", "contact", "weight", "temperature", "water_flow", "generic"}
+_CATEGORY_RENAMES = {
+    f"{prefix}{suffix}": f"{prefix}_{suffix}"
+    for prefix, suffixes in (
+        ("Device", ("Cooking", "Entertainment", "Computer", "Cleaning", "FoodStorage", "Beverage",
+                    "Lighting", "Climate", "Bed", "Seating", "WaterFixture", "Toilet", "Defrosting", "Interactive")),
+        ("Sensor", ("Presence", "Power", "Contact", "Weight", "Temperature", "WaterFlow", "Generic")),
+    )
+    for suffix in suffixes
+}
 
 
 def default_catalogue() -> dict:
     return {
         "schema_version": 1,
         "device_categories": {
-            "DeviceCooking": "Appliance used to prepare or heat food.",
-            "DeviceEntertainment": "Equipment used for entertainment.",
-            "DeviceComputer": "General-purpose computing equipment.",
-            "DeviceCleaning": "Equipment used to clean clothing, dishes or rooms.",
-            "DeviceFoodStorage": "Equipment used to preserve food.",
-            "DeviceBeverage": "Equipment used to prepare beverages.",
-            "DeviceLighting": "Light source, independent of control or meter type.",
-            "DeviceClimate": "Equipment used to heat, cool or ventilate a room.",
-            "DeviceBed": "Bed or other sleeping fixture.",
-            "DeviceSeating": "Chair, sofa or other seating fixture.",
-            "DeviceWaterFixture": "Fixture that supplies water.",
-            "DeviceToilet": "Toilet fixture.",
+            "Device_Cooking": "Appliance used to prepare or heat food.",
+            "Device_Entertainment": "Equipment used for entertainment.",
+            "Device_Computer": "General-purpose computing equipment.",
+            "Device_Cleaning": "Equipment used to clean clothing, dishes or rooms.",
+            "Device_FoodStorage": "Equipment used to preserve food.",
+            "Device_Beverage": "Equipment used to prepare beverages.",
+            "Device_Lighting": "Light source, independent of control or meter type.",
+            "Device_Climate": "Equipment used to heat, cool or ventilate a room.",
+            "Device_Bed": "Bed or other sleeping fixture.",
+            "Device_Seating": "Chair, sofa or other seating fixture.",
+            "Device_WaterFixture": "Fixture that supplies water.",
+            "Device_Toilet": "Toilet fixture.",
         },
         "sensor_categories": {
-            "SensorPresence": {"description": "Presence observation.", "measurement": "presence", "unit": "binary"},
-            "SensorPower": {"description": "Instantaneous electrical power.", "measurement": "power", "unit": "W"},
-            "SensorContact": {"description": "Open/closed or contact observation.", "measurement": "contact", "unit": "binary"},
-            "SensorWeight": {"description": "Weight or load observation; use the configured sensor scale.", "measurement": "weight", "unit": "configured"},
-            "SensorTemperature": {"description": "Temperature observation.", "measurement": "temperature", "unit": "°C"},
-            "SensorWaterFlow": {"description": "Water flow observation; use the configured sensor unit.", "measurement": "water_flow", "unit": "configured"},
-            "SensorGeneric": {"description": "Other numeric observation.", "measurement": "generic", "unit": "configured"},
+            "Sensor_Presence": {"description": "Presence observation.", "measurement": "presence", "unit": "binary"},
+            "Sensor_Power": {"description": "Instantaneous electrical power.", "measurement": "power", "unit": "W"},
+            "Sensor_Contact": {"description": "Open/closed or contact observation.", "measurement": "contact", "unit": "binary"},
+            "Sensor_Weight": {"description": "Weight or load observation; use the configured sensor scale.", "measurement": "weight", "unit": "configured"},
+            "Sensor_Temperature": {"description": "Temperature observation.", "measurement": "temperature", "unit": "°C"},
+            "Sensor_WaterFlow": {"description": "Water flow observation; use the configured sensor unit.", "measurement": "water_flow", "unit": "configured"},
+            "Sensor_Generic": {"description": "Other numeric observation.", "measurement": "generic", "unit": "configured"},
         },
         "device_types": {
-            "Oven": ["DeviceCooking"], "Microwave": ["DeviceCooking"],
-            "Toaster": ["DeviceCooking"], "Stove": ["DeviceCooking"],
-            "Cooktop": ["DeviceCooking"], "Air Fryer": ["DeviceCooking"],
-            "TV": ["DeviceEntertainment"], "Television": ["DeviceEntertainment"],
-            "PlayStation": ["DeviceEntertainment"], "Console": ["DeviceEntertainment"],
-            "Computer": ["DeviceComputer", "DeviceEntertainment"],
-            "PC": ["DeviceComputer", "DeviceEntertainment"],
-            "Washing_Machine": ["DeviceCleaning"], "Washing Machine": ["DeviceCleaning"],
-            "Dishwasher": ["DeviceCleaning"], "Vacuum Cleaner": ["DeviceCleaning"],
-            "Fridge": ["DeviceFoodStorage"], "Freezer": ["DeviceFoodStorage"],
-            "Coffee_Machine": ["DeviceBeverage"], "Coffee Machine": ["DeviceBeverage"],
-            "Kettle": ["DeviceBeverage"],
-            "Normal Light": ["DeviceLighting"], "Smart Light": ["DeviceLighting"],
-            "Lighting": ["DeviceLighting"],
-            "Air Conditioner": ["DeviceClimate"], "Heater": ["DeviceClimate"],
-            "Fan": ["DeviceClimate"], "Bed": ["DeviceBed"],
-            "Sofa": ["DeviceSeating"], "Chair": ["DeviceSeating"],
-            "Shower": ["DeviceWaterFixture"], "Sink": ["DeviceWaterFixture"],
-            "Toilet": ["DeviceToilet"],
+            "Oven": ["Device_Cooking"], "Microwave": ["Device_Cooking"],
+            "Toaster": ["Device_Cooking"], "Stove": ["Device_Cooking"],
+            "Cooktop": ["Device_Cooking"], "Air Fryer": ["Device_Cooking"],
+            "TV": ["Device_Entertainment"], "Television": ["Device_Entertainment"],
+            "PlayStation": ["Device_Entertainment"], "Console": ["Device_Entertainment"],
+            "Computer": ["Device_Computer", "Device_Entertainment"],
+            "PC": ["Device_Computer", "Device_Entertainment"],
+            "Washing_Machine": ["Device_Cleaning"], "Washing Machine": ["Device_Cleaning"],
+            "Dishwasher": ["Device_Cleaning"], "Vacuum Cleaner": ["Device_Cleaning"],
+            "Fridge": ["Device_FoodStorage"], "Freezer": ["Device_FoodStorage"],
+            "Coffee_Machine": ["Device_Beverage"], "Coffee Machine": ["Device_Beverage"],
+            "Kettle": ["Device_Beverage"],
+            "Normal Light": ["Device_Lighting"], "Smart Light": ["Device_Lighting"],
+            "Lighting": ["Device_Lighting"],
+            "Air Conditioner": ["Device_Climate"], "Heater": ["Device_Climate"],
+            "Fan": ["Device_Climate"], "Bed": ["Device_Bed"],
+            "Sofa": ["Device_Seating"], "Chair": ["Device_Seating"],
+            "Shower": ["Device_WaterFixture"], "Sink": ["Device_WaterFixture"],
+            "Toilet": ["Device_Toilet"],
         },
         "sensor_types": {
-            "PIR": ["SensorPresence"], "Presence": ["SensorPresence"],
-            "Smart Meter": ["SensorPower"], "Smartmeter": ["SensorPower"],
-            "Switch": ["SensorContact"], "Contact": ["SensorContact"],
-            "Door Contact": ["SensorContact"], "Weight": ["SensorWeight"],
-            "Temperature": ["SensorTemperature"], "Water Flow": ["SensorWaterFlow"],
-            "Water_Flow": ["SensorWaterFlow"],
+            "PIR": ["Sensor_Presence"], "Presence": ["Sensor_Presence"],
+            "Smart Meter": ["Sensor_Power"], "Smartmeter": ["Sensor_Power"],
+            "Switch": ["Sensor_Contact"], "Contact": ["Sensor_Contact"],
+            "Door Contact": ["Sensor_Contact"], "Weight": ["Sensor_Weight"],
+            "Temperature": ["Sensor_Temperature"], "Water Flow": ["Sensor_WaterFlow"],
+            "Water_Flow": ["Sensor_WaterFlow"],
         },
     }
 
@@ -74,6 +83,18 @@ def _kind(kind: str) -> str:
     return kind
 
 
+def category_name(name: str, kind: str, catalogue: dict) -> str:
+    """Resolve renamed built-ins into the requested dictionary's own spelling."""
+    available = catalogue[f"{kind}_categories"]
+    if name not in available:
+        for before, after in _CATEGORY_RENAMES.items():
+            if name == before and after in available:
+                return after
+            if name == after and before in available:
+                return before
+    return name
+
+
 def validate_categories(names, kind: str, catalogue: dict | None = None) -> list[str]:
     kind = _kind(kind)
     catalogue = load_catalogue() if catalogue is None else catalogue
@@ -82,7 +103,7 @@ def validate_categories(names, kind: str, catalogue: dict | None = None) -> list
     available = catalogue[f"{kind}_categories"]
     result = []
     for name in names:
-        name = name.strip()
+        name = category_name(name.strip(), kind, catalogue)
         if name not in available:
             raise ValueError(f"Unknown {kind} category: {name}")
         if name not in result:
@@ -124,13 +145,33 @@ def validate_catalogue(catalogue: dict) -> dict:
     return deepcopy(catalogue)
 
 
+def _current_catalogue(catalogue: dict) -> dict:
+    """Upgrade the shared dictionary without rewriting frozen training data."""
+    result = validate_catalogue(catalogue)
+    for kind in ("device", "sensor"):
+        definitions = result[f"{kind}_categories"]
+        for before, after in _CATEGORY_RENAMES.items():
+            if before not in definitions:
+                continue
+            if after in definitions and definitions[before] != definitions[after]:
+                raise ValueError(f"Conflicting category definitions: {before} and {after}.")
+            definitions[after] = definitions.pop(before)
+        for object_type, names in result[f"{kind}_types"].items():
+            result[f"{kind}_types"][object_type] = validate_categories(names, kind, result)
+    return result
+
+
 def load_catalogue() -> dict:
     path = storage.ensure_data() / "catalogue.json"
-    return validate_catalogue(storage.read_json(path))
+    original = storage.read_json(path)
+    current = _current_catalogue(original)
+    if current != original:
+        storage.atomic_json(path, current)
+    return current
 
 
 def save_catalogue(catalogue: dict) -> dict:
-    saved = validate_catalogue(catalogue)
+    saved = _current_catalogue(catalogue)
     storage.atomic_json(storage.ensure_data() / "catalogue.json", saved)
     return saved
 
@@ -139,10 +180,11 @@ def validate_catalogue_compatibility(source: dict, target: dict) -> None:
     """Require the same physical meaning for shared sensor category channels."""
     validate_catalogue(source)
     validate_catalogue(target)
-    shared = set(source["sensor_categories"]) & set(target["sensor_categories"])
-    for name in sorted(shared):
-        before = source["sensor_categories"][name]
-        after = target["sensor_categories"][name]
+    for name, before in sorted(source["sensor_categories"].items()):
+        other = category_name(name, "sensor", target)
+        if other not in target["sensor_categories"]:
+            continue
+        after = target["sensor_categories"][other]
         for field in ("measurement", "unit"):
             if before[field] != after[field]:
                 raise ValueError(
@@ -166,5 +208,5 @@ def categories_for(obj, kind: str, catalogue: dict | None = None) -> list[str]:
     normalized = str(object_type).strip().casefold()
     for name, categories in catalogue[f"{kind}_types"].items():
         if name.casefold() == normalized:
-            return list(categories)
+            return validate_categories(categories, kind, catalogue)
     return []

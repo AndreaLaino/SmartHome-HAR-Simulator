@@ -601,7 +601,8 @@ class LearnedHARWindow:
         extra = set()
         for kind, obj in _objects(self.ctx):
             for category in self.catalogue_api.categories_for(obj, kind, catalogue):
-                if category not in model["catalogue"][f"{kind}_categories"]:
+                resolved = self.catalogue_api.category_name(category, kind, model["catalogue"])
+                if resolved not in model["catalogue"][f"{kind}_categories"]:
                     extra.add(category)
         _config(self.ctx)["model_id"] = model_id
         self._update_model_status()

@@ -91,7 +91,9 @@ CSV is loaded at application startup, whether Manual mode is activated
 automatically, and whether PIR fields of view are shown. These choices are stored in
 the local, Git-ignored `settings.json` file. Visible PIR fields are clipped by
 walls and closed doors to match the simulator's detection behavior, and their
-transparency can be adjusted from the same menu. The window state and canvas
+transparency can be adjusted from the same menu: 0% is opaque and 100% is
+fully invisible. The overlays use actual alpha transparency, including on
+macOS, and resize with canvas zoom. The window state and canvas
 zoom position are also restored between application launches. Room outlines and
 recognized room types can be shown or hidden with **Settings > Show room types**.
 Room labels also show live power in watts, calculated by summing current Smart
@@ -101,7 +103,18 @@ shared room boundaries. Devices without a Smart Meter are excluded, and rooms
 without meters are marked **No smart meters**. **Scenario > Recognize rooms**
 shows the same live totals in the room list.
 
-To add a light, choose **Scenario > Add devices**, select **Normal Light** or
+To add a device, choose **Scenario > Add devices** and click its map position.
+In the dialog, choose a **Category** to filter **Device type**: for example,
+**Device_Cooking** offers Oven, Microwave, and Toaster. **All devices** shows the
+full list. Devices with multiple shared categories appear in each relevant
+group; selecting a group preserves all of the device's categories.
+
+Microwave, Toaster, TV, and PlayStation have illustrative nominal-load profiles
+in `consumption_profiles.py`. The toaster switches off after its three-minute
+cycle; Microwave, TV, and PlayStation remain on until switched off manually.
+These defaults are simulated examples, not measured appliance traces.
+
+To add a light, select **Device_Lighting** or **All devices**, select **Normal Light** or
 **Smart Light**, and enter its wattage (10 W by default). Both draw their configured
 power while on and 0 W while off, and stay on until switched off. Normal lights
 need a separate **Smart Meter** sensor to contribute to room power. Smart lights

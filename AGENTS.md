@@ -131,7 +131,7 @@ and supervised HAR are distinct workflows; do not conflate or remove them.
 ## Activity recognition invariants
 
 - Categories describe reusable capabilities and measurements, not activities.
-  `DeviceCooking` alone must never imply that a person is cooking.
+  `Device_Cooking` alone must never imply that a person is cooking.
 - Recognize activities from observed sensor/device values through the trained
   model. Do not introduce appliance-name rules or manual device-to-activity
   transfer mappings. With no active model, report that state clearly.

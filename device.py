@@ -4,6 +4,7 @@ from tkinter import simpledialog, messagebox
 from tkinter import ttk
 from read import read_devices as device_file
 from models import Device
+from har.catalogue import categories_for, load_catalogue
 from lighting import LIGHT_TYPES, NORMAL_LIGHT, SMART_LIGHT, ensure_light_switches
 from utils import raise_overlay_labels
 from label_layout import create_map_label
@@ -20,8 +21,26 @@ DEVICE_TYPES = (
 )
 
 
+def device_types_by_category(catalogue):
+    """Group creatable types using their shared categories, including every role."""
+    groups = {}
+    unclassified = []
+    for device_type in DEVICE_TYPES:
+        categories = categories_for({"type": device_type}, "device", catalogue)
+        if not categories:
+            unclassified.append(device_type)
+        for category in categories:
+            groups.setdefault(category, []).append(device_type)
+    if unclassified:
+        label = "Unclassified"
+        while label in groups:
+            label += " (no categories)"
+        groups[label] = unclassified
+    return {category: tuple(groups[category]) for category in sorted(groups)}
+
+
 def get_device_params(device_type):
-    """Default simulated watts; new appliances use a constant load, fixtures 0 W."""
+    """Default nominal watts; passive fixtures draw 0 W."""
     params = {
         "Fridge": {"power": 150, "min_consumption": 50,  "max_consumption": 150},
         "Washing_Machine":   {"power": 500, "min_consumption": 300, "max_consumption": 500},
@@ -46,11 +65,27 @@ def get_device_params(device_type):
 class DeviceDialog(simpledialog.Dialog):
     def body(self, master):
         tk.Label(master, text="Device name:").grid(row=0)
-        tk.Label(master, text="Device type:").grid(row=1)
+        tk.Label(master, text="Category:").grid(row=1)
+        tk.Label(master, text="Device type:").grid(row=2)
         self.device_name = tk.Entry(master)
         self.device_name.grid(row=0, column=1)
-        self.device_type = ttk.Combobox(master, values=DEVICE_TYPES)
-        self.device_type.grid(row=1, column=1)
+        try:
+            self.device_groups = device_types_by_category(load_catalogue())
+        except (OSError, ValueError):
+            self.device_groups = {}
+            tk.Label(master, text="Categories unavailable; showing all devices.").grid(
+                row=7, column=0, columnspan=2, padx=5, pady=5,
+            )
+        all_devices_label = "All devices"
+        while all_devices_label in self.device_groups:
+            all_devices_label += " (all types)"
+        self.device_category = ttk.Combobox(
+            master, values=(all_devices_label, *self.device_groups), state="readonly", width=28,
+        )
+        self.device_category.grid(row=1, column=1)
+        self.device_category.current(0)
+        self.device_type = ttk.Combobox(master, values=DEVICE_TYPES, width=28)
+        self.device_type.grid(row=2, column=1)
         self.device_type.current(0)
         self.lighting_power_label = tk.Label(master, text="Lighting power (W):")
         self.lighting_power = tk.Entry(master)
@@ -62,22 +97,31 @@ class DeviceDialog(simpledialog.Dialog):
         self.lighting_control_hint = tk.Label(
             master, text="Manual adds an ON/OFF switch. Automatic follows room presence.",
         )
+        self.device_category.bind("<<ComboboxSelected>>", self.on_category_selected)
         self.device_type.bind("<<ComboboxSelected>>", self.on_device_type_selected)
         return self.device_name
 
+    def on_category_selected(self, _event=None):
+        category = self.device_category.get()
+        choices = self.device_groups.get(category, DEVICE_TYPES)
+        self.device_type.configure(values=choices)
+        if self.device_type.get() not in choices:
+            self.device_type.set(choices[0])
+        self.on_device_type_selected()
+
     def on_device_type_selected(self, _event=None):
         if self.device_type.get() in LIGHT_TYPES:
-            self.lighting_power_label.grid(row=2, column=0)
-            self.lighting_power.grid(row=2, column=1)
+            self.lighting_power_label.grid(row=3, column=0)
+            self.lighting_power.grid(row=3, column=1)
             self.lighting_meter_label.configure(text=(
                 "Smart Meter integrated; included in room power automatically."
                 if self.device_type.get() == SMART_LIGHT
                 else "Add a separate Smart Meter to include this light in room power."
             ))
-            self.lighting_control_label.grid(row=3, column=0)
-            self.lighting_control.grid(row=3, column=1)
-            self.lighting_control_hint.grid(row=4, column=0, columnspan=2, padx=5, pady=5)
-            self.lighting_meter_label.grid(row=5, column=0, columnspan=2, padx=5, pady=5)
+            self.lighting_control_label.grid(row=4, column=0)
+            self.lighting_control.grid(row=4, column=1)
+            self.lighting_control_hint.grid(row=5, column=0, columnspan=2, padx=5, pady=5)
+            self.lighting_meter_label.grid(row=6, column=0, columnspan=2, padx=5, pady=5)
         else:
             self.lighting_power_label.grid_remove()
             self.lighting_power.grid_remove()

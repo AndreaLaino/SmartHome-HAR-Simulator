@@ -78,22 +78,22 @@ class LearnedHARWindowTests(unittest.TestCase):
 
     def test_categories_are_shared_type_defaults_without_activity_assignment(self):
         self.select_object("source_oven")
-        self.assertEqual(self.ui._chosen_categories(), ["DeviceCooking"])
-        self.choose_categories(["DeviceCooking", "DeviceCleaning"])
+        self.assertEqual(self.ui._chosen_categories(), ["Device_Cooking"])
+        self.choose_categories(["Device_Cooking", "Device_Cleaning"])
         self.ui.apply_categories()
-        self.assertEqual(set(self.oven.categories), {"DeviceCooking", "DeviceCleaning"})
+        self.assertEqual(set(self.oven.categories), {"Device_Cooking", "Device_Cleaning"})
         self.ui.save_type_defaults()
         self.assertIsNone(self.oven.categories)
         other_oven = Device("another_house_oven", 0, 0, "Oven", 1000, 0, 1000, 1000)
-        self.assertEqual(set(catalogue.categories_for(other_oven, "device")), {"DeviceCooking", "DeviceCleaning"})
+        self.assertEqual(set(catalogue.categories_for(other_oven, "device")), {"Device_Cooking", "Device_Cleaning"})
         self.assertNotIn("activities", catalogue.load_catalogue())
         self.ui.new_kind.set("sensor")
-        self.ui.new_category.set("SensorDoorPresence")
+        self.ui.new_category.set("Sensor_DoorPresence")
         self.ui.new_description.set("Presence at a doorway")
         self.ui.new_measurement.set("presence")
         self.ui.new_unit.set("binary")
         self.ui.add_category()
-        self.assertEqual(catalogue.load_catalogue()["sensor_categories"]["SensorDoorPresence"]["measurement"], "presence")
+        self.assertEqual(catalogue.load_catalogue()["sensor_categories"]["Sensor_DoorPresence"]["measurement"], "presence")
         self.select_object("source_motion")
         self.choose_categories([])
         self.ui.apply_categories()
@@ -176,7 +176,7 @@ class LearnedHARWindowTests(unittest.TestCase):
                 frames.append({
                     "time_seconds": tick * (60 + index * 5), "labels": ["cooking"] if on else [],
                     "devices": [{"name": "oven" if source else "renamed_microwave", "type": "Oven" if source else "Microwave",
-                                 "x": 0, "y": 0, "categories": ["DeviceCooking"], "state": on,
+                                 "x": 0, "y": 0, "categories": ["Device_Cooking"], "state": on,
                                  "power": 1000 if source else 700, "max_consumption": 1000 if source else 700,
                                  "current_consumption": on * (1000 if source else 700)}],
                     "sensors": [], "sensor_states": {}, "rooms": [],
@@ -199,13 +199,13 @@ class LearnedHARWindowTests(unittest.TestCase):
         model = storage.load_model(self.ctx.har_config["model_id"])
         self.assertEqual(model["source_house_id"], "source_house")
         self.assertTrue(list((storage.DATA_DIR / "reports").glob("*_evaluation.json")))
-        dictionary["device_categories"]["DeviceDefrosting"] = "Additional appliance capability."
+        dictionary["device_categories"]["Device_Defrosting"] = "Additional appliance capability."
         catalogue.save_catalogue(dictionary)
-        self.oven.categories = ["DeviceCooking", "DeviceDefrosting"]
+        self.oven.categories = ["Device_Cooking", "Device_Defrosting"]
         self.ui.activate_model()
         self.assertIn("Extra categories unused", self.ui.status.get())
         self.ui.deactivate_model()
-        dictionary["sensor_categories"]["SensorPower"]["unit"] = "kW"
+        dictionary["sensor_categories"]["Sensor_Power"]["unit"] = "kW"
         catalogue.save_catalogue(dictionary)
         with self.assertRaises(ValueError):
             self.ui.activate_model()

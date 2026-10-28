@@ -1,5 +1,6 @@
 import math
 from typing import Optional
+from PIL import Image, ImageDraw, ImageTk
 
 from consumption_profiles import consumption_profiles, get_device_consumption
 from lighting import LIGHT_TYPES
@@ -109,36 +110,26 @@ def _clipped_pir_ray(sensor, angle_degrees: float, walls, doors) -> tuple[float,
     )
 
 
-def _blend_with_white(color: tuple[int, int, int], opacity: float) -> str:
-    channels = [round(255 - (255 - channel) * opacity) for channel in color]
-    return "#" + "".join(f"{channel:02x}" for channel in channels)
+def _pir_fov_image(points):
+    """Rasterize the clipped polygon with a transparent background."""
+    coordinates = list(zip(points[::2], points[1::2]))
+    left = math.floor(min(x for x, _ in coordinates)) - 1
+    top = math.floor(min(y for _, y in coordinates)) - 1
+    right = math.ceil(max(x for x, _ in coordinates)) + 1
+    bottom = math.ceil(max(y for _, y in coordinates)) + 1
+    image = Image.new("RGBA", (right - left + 1, bottom - top + 1))
+    ImageDraw.Draw(image).polygon(
+        [(x - left, y - top) for x, y in coordinates],
+        fill=(*PIR_FOV_FILL, 255), outline=(*PIR_FOV_OUTLINE, 255),
+    )
+    return (left, top), image
 
 
-def _pir_fov_style(transparency: int) -> dict[str, str]:
-    transparency = max(0, min(100, int(transparency)))
-    opacity = 1.0 - transparency / 100.0
-    if opacity <= 0:
-        return {"fill": "", "outline": "#ffffff", "stipple": ""}
-
-    # Tk Canvas has no alpha channel. Combine its built-in density patterns
-    # with color blending so every slider position produces a useful preview.
-    if opacity > 0.75:
-        density, stipple = 1.0, ""
-    elif opacity > 0.5:
-        density, stipple = 0.75, "gray75"
-    elif opacity > 0.25:
-        density, stipple = 0.5, "gray50"
-    elif opacity > 0.125:
-        density, stipple = 0.25, "gray25"
-    else:
-        density, stipple = 0.125, "gray12"
-
-    color_opacity = min(1.0, opacity / density)
-    return {
-        "fill": _blend_with_white(PIR_FOV_FILL, color_opacity),
-        "outline": _blend_with_white(PIR_FOV_OUTLINE, opacity),
-        "stipple": stipple,
-    }
+def _pir_fov_with_transparency(image, transparency):
+    opacity = 1.0 - max(0, min(100, int(transparency))) / 100.0
+    rendered = image.copy()
+    rendered.putalpha(image.getchannel("A").point(lambda alpha: round(alpha * opacity)))
+    return rendered
 
 
 def draw_pir_fov(canvas, sensor, walls=(), doors=()) -> None:
@@ -160,13 +151,17 @@ def draw_pir_fov(canvas, sensor, walls=(), doors=()) -> None:
         )
         points.extend(to_canvas(canvas, ray_x, ray_y))
 
-    style = _pir_fov_style(getattr(canvas, "_pir_fov_transparency", 50))
-    canvas.create_polygon(
-        *points,
-        width=1,
+    transparency = getattr(canvas, "_pir_fov_transparency", 50)
+    position, image = _pir_fov_image(points)
+    photo = ImageTk.PhotoImage(_pir_fov_with_transparency(image, transparency), master=canvas)
+    item = canvas.create_image(
+        *position, anchor="nw", image=photo,
         tags=(PIR_FOV_TAG, f"{sensor.name}_fov"),
-        **style,
     )
+    if not hasattr(canvas, "_pir_fov_images"):
+        canvas._pir_fov_images = {}
+    # Keep Tk images alive and reuse the clipped geometry while the slider moves.
+    canvas._pir_fov_images[item] = (image, photo)
     # Keep the field visible above the grid, but behind walls and map markers.
     canvas.tag_raise(PIR_FOV_TAG, "background_grid")
 
@@ -181,6 +176,7 @@ def set_pir_fov_sources(canvas, sensors, walls=(), doors=()) -> None:
 def refresh_pir_fov(canvas) -> None:
     """Redraw PIR overlays after sensors, walls, or doors change."""
     canvas.delete(PIR_FOV_TAG)
+    canvas._pir_fov_images = {}
     if getattr(canvas, "_show_pir_fov", False):
         sensors = getattr(canvas, "_pir_fov_sensors", ())
         walls = getattr(canvas, "_pir_fov_walls", ())
@@ -198,7 +194,9 @@ def set_pir_fov_transparency(canvas, transparency: int) -> int:
         requested = 50
     selected = max(0, min(100, requested))
     canvas._pir_fov_transparency = selected
-    canvas.itemconfigure(PIR_FOV_TAG, **_pir_fov_style(selected))
+    for image, photo in getattr(canvas, "_pir_fov_images", {}).values():
+        photo.paste(_pir_fov_with_transparency(image, selected))
+    # Alpha zero is fully invisible while preserving bounds for stable zoom/scroll.
     return selected
 
 
@@ -461,9 +459,9 @@ def update_devices_consumption(canvas, devices, delta_seconds, timer_app_instanc
                         pass
 
                 # At end of profile: for non-continuous devices, turn OFF and close cycle.
-                # Continuous: Refrigerator, Computer and Oven continue in duration module.
+                # Manually controlled devices remain on past the profile endpoint.
                 if elapsed_min >= profile_duration:
-                    if cycle_type not in ["Fridge", "Computer", "Oven"]:
+                    if cycle_type not in ["Fridge", "Computer", "Oven", "Microwave", "TV", "PlayStation"]:
                         # Turn off the device and close the cycle
                         device.state = 0
                         device.current_consumption = 0

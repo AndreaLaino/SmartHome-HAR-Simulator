@@ -9,7 +9,7 @@ from __future__ import annotations
 import math
 from collections import defaultdict
 
-from har.catalogue import categories_for
+from har.catalogue import categories_for, category_name
 
 
 ROOMS = ("unknown", "kitchen", "livingroom", "bedroom", "bathroom", "office", "hallway", "diningroom", "laundry", "other")
@@ -66,7 +66,8 @@ def _known_categories(obj, kind, catalogue):
     # Additional target categories must not remove its already known channels.
     explicit = obj.get("categories")
     if explicit is not None:
-        return [name for name in explicit if name in catalogue[f"{kind}_categories"]]
+        resolved = (category_name(name, kind, catalogue) for name in explicit)
+        return list(dict.fromkeys(name for name in resolved if name in catalogue[f"{kind}_categories"]))
     return categories_for(obj, kind, catalogue)
 
 

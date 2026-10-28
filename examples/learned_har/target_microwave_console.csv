@@ -41,9 +41,9 @@ HAR metadata
 config,"{""house_id"": ""demo-target"", ""house_label"": ""Demo: Microwave / PlayStation"", ""model_id"": null}"
 
 HAR categories
-device,target_microwave,"[""DeviceCooking""]"
-device,target_console,"[""DeviceEntertainment""]"
-sensor,target_kitchen_power,"[""SensorPower""]"
-sensor,target_kitchen_motion,"[""SensorPresence""]"
-sensor,target_living_power,"[""SensorPower""]"
-sensor,target_living_motion,"[""SensorPresence""]"
+device,target_microwave,"[""Device_Cooking""]"
+device,target_console,"[""Device_Entertainment""]"
+sensor,target_kitchen_power,"[""Sensor_Power""]"
+sensor,target_kitchen_motion,"[""Sensor_Presence""]"
+sensor,target_living_power,"[""Sensor_Power""]"
+sensor,target_living_motion,"[""Sensor_Presence""]"

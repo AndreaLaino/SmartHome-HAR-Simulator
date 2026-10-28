@@ -41,9 +41,9 @@ HAR metadata
 config,"{""house_id"": ""demo-source"", ""house_label"": ""Demo: Oven / TV"", ""model_id"": null}"
 
 HAR categories
-device,source_oven,"[""DeviceCooking""]"
-device,source_tv,"[""DeviceEntertainment""]"
-sensor,source_kitchen_power,"[""SensorPower""]"
-sensor,source_kitchen_motion,"[""SensorPresence""]"
-sensor,source_living_power,"[""SensorPower""]"
-sensor,source_living_motion,"[""SensorPresence""]"
+device,source_oven,"[""Device_Cooking""]"
+device,source_tv,"[""Device_Entertainment""]"
+sensor,source_kitchen_power,"[""Sensor_Power""]"
+sensor,source_kitchen_motion,"[""Sensor_Presence""]"
+sensor,source_living_power,"[""Sensor_Power""]"
+sensor,source_living_motion,"[""Sensor_Presence""]"

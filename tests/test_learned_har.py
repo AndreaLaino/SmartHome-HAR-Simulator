@@ -1,6 +1,7 @@
 """Learned categories transfer observations, never hand-written activities."""
 
 import copy
+import json
 from pathlib import Path
 import tempfile
 import unittest
@@ -97,6 +98,32 @@ class LearnedCategoryModelTests(unittest.TestCase):
             vector = FeatureEncoder(loaded["catalogue"]).update(frame)
             self.assertEqual(predict_vector(self.model, vector), predict_vector(loaded, vector))
 
+    def test_renamed_categories_preserve_old_model_predictions_and_frozen_schema(self):
+        # Recreate the spelling used by recordings and models before the rename.
+        legacy = json.loads(json.dumps(self.sessions).replace("Device_", "Device").replace("Sensor_", "Sensor"))
+        legacy_model = train_source(legacy, "demo-source")
+        old_targets = [session for session in legacy if session["partition"] == "target"]
+        new_targets = [session for session in self.sessions if session["partition"] == "target"]
+        with tempfile.TemporaryDirectory() as temp, patch.object(storage, "DATA_DIR", Path(temp)):
+            path = storage.save_model(legacy_model)
+            loaded = validate_model(storage.load_model(legacy_model["model_id"]))
+            before = copy.deepcopy(loaded)
+            for model in (self.model, loaded):
+                with self.subTest(legacy_schema=model is loaded):
+                    old_report = evaluate_model(model, old_targets)
+                    new_report = evaluate_model(model, new_targets)
+                    self.assertEqual(old_report["predictions"], new_report["predictions"])
+            self.assertEqual(loaded, before)
+            self.assertEqual(storage.read_json(path), before)
+            for model, targets, power_category in (
+                (loaded, new_targets, "Sensor_Power"),
+                (self.model, old_targets, "SensorPower"),
+            ):
+                incompatible = copy.deepcopy(targets[0])
+                incompatible["catalogue"]["sensor_categories"][power_category]["unit"] = "kW"
+                with self.subTest(unit_category=power_category), self.assertRaisesRegex(ValueError, "unit"):
+                    evaluate_model(model, [incompatible])
+
     def test_portable_tree_probabilities_match_sklearn_for_multiple_activities(self):
         import numpy as np
         from sklearn.ensemble import RandomForestClassifier
@@ -154,8 +181,8 @@ class LearnedCategoryModelTests(unittest.TestCase):
 
     def test_sensor_units_must_match_the_frozen_training_dictionary(self):
         target = copy.deepcopy(self.sessions[-1])
-        target["catalogue"]["sensor_categories"]["SensorPower"]["unit"] = "kW"
-        with self.assertRaisesRegex(ValueError, "SensorPower"):
+        target["catalogue"]["sensor_categories"]["Sensor_Power"]["unit"] = "kW"
+        with self.assertRaisesRegex(ValueError, "Sensor_Power"):
             evaluate_model(self.model, [target])
 
     def test_new_house_identity_cannot_reuse_old_temporal_history_with_same_model(self):

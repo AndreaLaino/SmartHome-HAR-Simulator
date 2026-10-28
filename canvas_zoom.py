@@ -172,6 +172,11 @@ def set_zoom(
     if callable(scale_label_anchors):
         scale_label_anchors(ratio)
     canvas._zoom_factor = target
+    if getattr(canvas, "_show_pir_fov", False):
+        # Canvas scaling moves image anchors but cannot resize their pixels.
+        from utils import refresh_pir_fov
+
+        refresh_pir_fov(canvas)
     background_callback = getattr(canvas, "_redraw_zoom_background", None)
     if redraw_background and callable(background_callback):
         background_callback(target)
