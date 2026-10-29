@@ -59,6 +59,38 @@ def read_json(path: str | Path) -> dict:
     return data
 
 
+def _activity_names(names) -> list[str]:
+    if not isinstance(names, list):
+        raise ValueError("Activity names must be a list.")
+    result = []
+    for name in names:
+        if not isinstance(name, str) or not name.strip() or any(char in name for char in ",\r\n"):
+            raise ValueError("Provide one nonempty activity name without commas or line breaks.")
+        name = name.strip()
+        if name not in result:
+            result.append(name)
+    return result
+
+
+def load_activity_names() -> list[str]:
+    """Read shared button labels; these names do not assign activities to objects."""
+    try:
+        data = read_json(Path(DATA_DIR) / "activities.json")
+    except FileNotFoundError:
+        return []
+    if data.get("schema_version") != 1:
+        raise ValueError("Unsupported activity-name schema.")
+    return _activity_names(data.get("activities"))
+
+
+def save_activity_names(names: list[str]) -> Path:
+    """Atomically save reusable activity names separately from categories/models."""
+    payload = {"schema_version": 1, "activities": _activity_names(names)}
+    path = Path(DATA_DIR) / "activities.json"
+    atomic_json(path, payload)
+    return path
+
+
 def new_house_config() -> dict:
     return {"house_id": uuid4().hex, "house_label": "House", "model_id": None}
 

@@ -1,4 +1,5 @@
 """UI workflow checks; real Tk tests opt in with SIMULATOR_GUI_TESTS=1."""
+from copy import deepcopy
 import os
 from pathlib import Path
 import tempfile
@@ -8,7 +9,7 @@ import unittest
 from unittest.mock import patch
 
 from app.context import AppContext
-from app.ui.learned_har import LearnedHARWindow, format_evaluation, parse_labels
+from app.ui.learned_har import LearnedHARWindow, format_evaluation, model_display_names, parse_labels
 from har import catalogue, storage
 from models import Device, Sensor
 
@@ -17,6 +18,69 @@ class LearnedHARPresentationTests(unittest.TestCase):
     def test_labels_are_multiple_observed_activities(self):
         self.assertEqual(parse_labels(" cooking, relaxing, cooking,  "), ["cooking", "relaxing"])
         self.assertEqual(parse_labels(""), [])
+
+    def test_model_names_use_source_metadata_or_source_recordings_and_creation_order(self):
+        models = [
+            {"model_id": "later", "source_house_id": "source-a", "created_at": "2026-10-28T13:00:00+00:00"},
+            {"model_id": "first", "source_house_id": "source-a", "created_at": "2026-10-28T12:00:00+00:00"},
+            {"model_id": "next-day", "source_house_id": "source-a", "created_at": "2026-10-29T12:00:00+00:00"},
+            {"model_id": "other", "source_house_id": "source-b", "source_house_label": "House B",
+             "created_at": "2026-10-28T12:00:00+00:00"},
+        ]
+        sessions = [
+            {"house_id": "source-a", "house_label": "House A", "partition": "source"},
+            {"house_id": "source-a", "house_label": "Wrong target label", "partition": "target"},
+            {"house_id": "source-b", "house_label": "Old house name", "partition": "source"},
+        ]
+        before = deepcopy((models, sessions))
+        expected = {
+            "first": "House_A_2026-10-28_001", "later": "House_A_2026-10-28_002",
+            "next-day": "House_A_2026-10-29_001", "other": "House_B_2026-10-28_001",
+        }
+        self.assertEqual(model_display_names(models, sessions), expected)
+        self.assertEqual(model_display_names(list(reversed(models)), list(reversed(sessions))), expected)
+        self.assertEqual((models, sessions), before)
+
+    def test_model_names_keep_saved_names_and_disambiguate_same_visible_house_names(self):
+        models = [
+            {"model_id": "legacy", "source_house_id": "a", "source_house_label": "House A",
+             "created_at": "2026-10-28T12:00:00+00:00"},
+            {"model_id": "saved", "source_house_id": "a", "source_house_label": "House A",
+             "created_at": "2026-10-28T13:00:00+00:00", "display_name": "House_A_2026-10-28_002"},
+            {"model_id": "fresh", "source_house_id": "a", "source_house_label": "House A",
+             "created_at": "2026-10-28T14:00:00+00:00"},
+            {"model_id": "different-house", "source_house_id": "b", "source_house_label": "House_A",
+             "created_at": "2026-10-28T15:00:00+00:00"},
+            {"model_id": "unicode", "source_house_id": "c", "source_house_label": "  Mia   càsa  ",
+             "created_at": "2026-10-28T12:00:00+00:00"},
+            {"model_id": "unknown", "source_house_id": "d"},
+        ]
+        before = deepcopy(models)
+        names = model_display_names(models, [])
+        self.assertEqual(names["legacy"], "House_A_2026-10-28_001")
+        self.assertEqual(names["saved"], "House_A_2026-10-28_002")
+        self.assertEqual(names["fresh"], "House_A_2026-10-28_003")
+        self.assertEqual(names["different-house"], "House_A_2026-10-28_004")
+        self.assertEqual(names["unicode"], "Mia_càsa_2026-10-28_001")
+        self.assertEqual(names["unknown"], "Unknown_house_undated_001")
+        self.assertEqual(len(set(names.values())), len(models))
+        self.assertEqual(models, before)
+
+    def test_model_names_have_deterministic_ties_and_safe_missing_metadata_fallbacks(self):
+        models = [
+            {"model_id": "b", "source_house_id": "unknown", "created_at": "invalid"},
+            {"model_id": "a", "source_house_id": "unknown", "created_at": None},
+            {"model_id": "c", "source_house_id": "unknown", "display_name": "Kept readable name"},
+            {"model_id": "d", "source_house_id": "unknown", "display_name": "Kept readable name"},
+        ]
+        names = model_display_names(models, [
+            {"house_id": "unknown", "partition": "target", "house_label": "Not the source name"},
+        ])
+        self.assertEqual(names["a"], "Unknown_house_undated_001")
+        self.assertEqual(names["b"], "Unknown_house_undated_002")
+        self.assertEqual(names["c"], "Kept readable name")
+        self.assertEqual(len(set(names.values())), len(models))
+        self.assertEqual(model_display_names(list(reversed(models)), []), names)
 
     def test_report_distinguishes_evaluation_from_confidence(self):
         text = format_evaluation({"labelled_samples": 10, "exact_match_accuracy": .8,
@@ -145,6 +209,52 @@ class LearnedHARWindowTests(unittest.TestCase):
         self.ui.deactivate_model()
         self.assertIsNone(self.ctx.har_config["model_id"])
 
+    def test_readable_legacy_model_choices_preserve_selection_ids_and_saved_files(self):
+        dictionary = catalogue.load_catalogue()
+        session_path = storage.save_session({
+            "schema_version": 1, "session_id": "legacy-source-session", "house_id": "source-house",
+            "house_label": "House A", "partition": "source", "catalogue": dictionary, "frames": [],
+        })
+        first_id, selected_id, added_id = "a" * 32, "b" * 32, "c" * 32
+        models = [
+            {"model_id": first_id, "source_house_id": "source-house", "catalogue": dictionary,
+             "created_at": "2026-10-28T12:00:00+00:00"},
+            {"model_id": selected_id, "source_house_id": "source-house", "catalogue": dictionary,
+             "created_at": "2026-10-28T13:00:00+00:00"},
+        ]
+        paths = [storage.save_model(model) for model in models]
+        original_files = {path: path.read_bytes() for path in [*paths, session_path]}
+        self.ctx.har_config.update(house_label="House B", model_id=selected_id)
+        config_before = self.ctx.har_config.copy()
+        self.ui.refresh_data()
+        self.assertEqual(set(self.ui.model_choices), {"House_A_2026-10-28_001", "House_A_2026-10-28_002"})
+        choice = next(label for label, identifier in self.ui.model_choices.items() if identifier == selected_id)
+        self.ui.model.set(choice)
+        with patch("har.learning.validate_model", side_effect=lambda model: model):
+            self.ui.activate_button.invoke()
+        self.assertIn(choice, self.ui.model_status.get())
+        self.assertNotIn(selected_id, self.ui.model_status.get())
+        self.assertEqual(self.ctx.har_config, config_before)
+
+        # Adding an earlier legacy model can renumber fallback labels; selection
+        # must continue to identify the same model rather than follow its old text.
+        added = dict(models[0], model_id=added_id, created_at="2026-10-28T12:30:00+00:00")
+        storage.save_model(added)
+        self.ui.refresh_data()
+        self.assertEqual(self.ui.model_choices[self.ui.model.get()], selected_id)
+        self.assertIn(self.ui.model.get(), self.ui.model_status.get())
+        self.ui.close()
+        self.ui = LearnedHARWindow(self.ctx)
+        self.pump()
+        active_name = next(label for label, identifier in self.ui.model_choices.items() if identifier == selected_id)
+        self.assertIn(active_name, self.ui.model_status.get())
+        self.assertEqual(self.ctx.har_config, config_before)
+        for path, content in original_files.items():
+            self.assertEqual(path.read_bytes(), content)
+        self.assertEqual({path.name for path in (storage.DATA_DIR / "models").glob("*.json")}, {
+            f"{first_id}.json", f"{selected_id}.json", f"{added_id}.json",
+        })
+
     def test_recording_can_start_paused_and_saves_unlabelled_and_labelled_frames(self):
         from types import SimpleNamespace
         from har.runtime import current_runtime, process_frame
@@ -168,6 +278,7 @@ class LearnedHARWindowTests(unittest.TestCase):
 
     def test_real_source_training_target_evaluation_and_activation(self):
         dictionary = catalogue.load_catalogue()
+        self.ctx.har_config.update(house_id="target_house", house_label="Target")
         for index in range(4):
             source = index < 3
             frames = []
@@ -198,6 +309,11 @@ class LearnedHARWindowTests(unittest.TestCase):
         self.ui.activate_model()
         model = storage.load_model(self.ctx.har_config["model_id"])
         self.assertEqual(model["source_house_id"], "source_house")
+        self.assertEqual(model["source_house_label"], "Source")
+        self.assertRegex(model["display_name"], r"^Source_\d{4}-\d{2}-\d{2}_001$")
+        self.assertIn(model["display_name"], self.ui.model_status.get())
+        self.assertEqual(self.ui.model_choices[self.ui.model.get()], model["model_id"])
+        self.assertTrue((storage.DATA_DIR / "models" / f"{model['model_id']}.json").is_file())
         self.assertTrue(list((storage.DATA_DIR / "reports").glob("*_evaluation.json")))
         dictionary["device_categories"]["Device_Defrosting"] = "Additional appliance capability."
         catalogue.save_catalogue(dictionary)

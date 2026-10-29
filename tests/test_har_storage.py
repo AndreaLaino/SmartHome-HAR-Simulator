@@ -50,6 +50,43 @@ class CategoryStorageTests(unittest.TestCase):
             "sensor_types": {"Smart Meter": ["SensorPower"], "Unclassified sensor": []},
         }
 
+    def test_shared_activity_names_are_optional_and_preserve_exact_label_spelling(self):
+        self.assertEqual(storage.load_activity_names(), [])
+        self.assertFalse(storage.DATA_DIR.exists())
+        path = storage.save_activity_names([" cooking ", "relaxing", "cooking", "Cooking", "attività personale"])
+        self.assertEqual(path, storage.DATA_DIR / "activities.json")
+        self.assertEqual(storage.load_activity_names(), ["cooking", "relaxing", "Cooking", "attività personale"])
+        self.assertEqual(storage.read_json(path), {
+            "schema_version": 1, "activities": ["cooking", "relaxing", "Cooking", "attività personale"],
+        })
+        self.assertEqual(list(storage.DATA_DIR.iterdir()), [path])
+        storage.save_activity_names([])
+        self.assertEqual(storage.load_activity_names(), [])
+
+    def test_invalid_activity_names_do_not_replace_the_saved_registry(self):
+        path = storage.save_activity_names(["cooking"])
+        before = path.read_bytes()
+        for names in (None, "cooking", [None], [""], ["  "], ["cooking, relaxing"], ["cooking\n"], ["a\rb"]):
+            with self.subTest(names=names), self.assertRaises(ValueError):
+                storage.save_activity_names(names)
+            self.assertEqual(path.read_bytes(), before)
+
+    def test_corrupt_activity_registry_is_reported_without_rewriting_it(self):
+        path = storage.save_activity_names(["cooking"])
+        for data in ({"schema_version": 2, "activities": ["cooking"]},
+                     {"schema_version": 1},
+                     {"schema_version": 1, "activities": "cooking"},
+                     {"schema_version": 1, "activities": ["cooking, relaxing"]}):
+            storage.atomic_json(path, data)
+            before = path.read_bytes()
+            with self.subTest(data=data), self.assertRaises(ValueError):
+                storage.load_activity_names()
+            self.assertEqual(path.read_bytes(), before)
+        path.write_text("{unfinished", encoding="utf-8")
+        with self.assertRaises(ValueError):
+            storage.load_activity_names()
+        self.assertEqual(path.read_text(encoding="utf-8"), "{unfinished")
+
     def test_categories_are_reused_across_types_without_assigning_activities(self):
         dictionary = catalogue.default_catalogue()
         oven = Device("different name", 0, 0, "Oven", 100, 0, 0, 100)

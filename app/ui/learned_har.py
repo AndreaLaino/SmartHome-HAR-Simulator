@@ -6,6 +6,7 @@ there is deliberately no object-to-activity assignment in this window.
 from __future__ import annotations
 
 from copy import deepcopy
+from datetime import datetime, timezone
 import gc
 import queue
 import threading
@@ -39,6 +40,55 @@ def _objects(ctx):
 
 def _session_house(session):
     return str(session.get("house_id", "")), str(session.get("house_label") or session.get("house_id", ""))
+
+
+def _source_house_names(sessions):
+    return {session["house_id"]: session["house_label"]
+            for session in sorted(sessions, key=lambda item: (str(item.get("created_at") or ""), item.get("session_id", "")))
+            if session.get("partition") == "source" and session.get("house_label")}
+
+
+def model_display_names(models, sessions):
+    """Readable UI labels; model IDs, file paths and existing data stay intact."""
+    source_names = _source_house_names(sessions)
+
+    def created(model):
+        try:
+            value = datetime.fromisoformat(model.get("created_at", "").replace("Z", "+00:00"))
+            return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value
+        except (AttributeError, TypeError, ValueError):
+            return datetime.min.replace(tzinfo=timezone.utc)
+
+    ordered = sorted(models, key=lambda model: (created(model), model["model_id"]))
+    names, used, counts = {}, set(), {}
+    # Reserve persisted names first so legacy fallbacks cannot take their names.
+    for model in ordered:
+        name = model.get("display_name")
+        if isinstance(name, str) and name.strip() and name.strip() not in used:
+            names[model["model_id"]] = name.strip()
+            used.add(name.strip())
+    for model in ordered:
+        source_name = model.get("source_house_label")
+        if not isinstance(source_name, str) or not source_name.strip():
+            source_name = source_names.get(model.get("source_house_id")) or "Unknown_house"
+        house = "_".join(source_name.split())
+        timestamp = created(model)
+        date = timestamp.astimezone().strftime("%Y-%m-%d") if timestamp.year > 1 else "undated"
+        base = f"{house}_{date}"
+        identifier = model["model_id"]
+        if identifier not in names:
+            number = counts.get(base, 0) + 1
+            name = f"{base}_{number:03d}"
+            while name in used:
+                number += 1
+                name = f"{base}_{number:03d}"
+            names[identifier] = name
+            used.add(name)
+        prefix = base + "_"
+        suffix = names[identifier][len(prefix):] if names[identifier].startswith(prefix) else ""
+        if suffix.isdecimal():
+            counts[base] = max(counts.get(base, 0), int(suffix))
+    return {model["model_id"]: names[model["model_id"]] for model in ordered}
 
 
 def format_evaluation(report: dict) -> str:
@@ -81,6 +131,7 @@ class LearnedHARWindow:
         self.objects = {}
         self.source_houses = {}
         self.model_choices = {}
+        self.model_names = {}
         self._jobs = queue.Queue()
         self._busy = False
         self._success_callback = None
@@ -457,7 +508,9 @@ class LearnedHARWindow:
 
     def _update_model_status(self):
         model_id = _config(self.ctx).get("model_id")
-        self.model_status.set(f"Active model in this house: {model_id or 'none (no learned predictions)'}")
+        name = self.model_names.get(model_id, "unavailable (refresh saved models)") if model_id else \
+            "none (no learned predictions)"
+        self.model_status.set(f"Active model in this house: {name}")
 
     def add_demo_sessions(self):
         from har.demo import demo_sessions
@@ -489,15 +542,12 @@ class LearnedHARWindow:
         self.source_combo.configure(values=choices)
         if self.source.get() not in self.source_houses:
             self.source.set(choices[0] if choices else "")
-        self.model_choices.clear()
-        for model in self.storage.list_models():
-            model_id = model.get("model_id")
-            if model_id:
-                label = f"{model_id} · source {model.get('source_house_label') or model.get('source_house_id', '?')}"
-                self.model_choices[label] = model_id
+        selected_id = self.model_choices.get(self.model.get())
+        self.model_names = model_display_names(self.storage.list_models(), self.sessions)
+        self.model_choices = {name: identifier for identifier, name in self.model_names.items()}
         self.model_combo.configure(values=list(self.model_choices))
-        if self.model.get() not in self.model_choices:
-            self.model.set(next(iter(self.model_choices), ""))
+        preferred_id = selected_id if selected_id in self.model_names else _config(self.ctx).get("model_id")
+        self.model.set(self.model_names.get(preferred_id, next(iter(self.model_choices), "")))
         self._update_session_summary()
         self._update_model_status()
 
@@ -549,6 +599,8 @@ class LearnedHARWindow:
 
         def job():
             model = train_source(sessions, source_id, window_seconds=seconds, seed=42)
+            model["source_house_label"] = _source_house_names(sessions)[source_id]
+            model["display_name"] = model_display_names([*storage.list_models(), model], sessions)[model["model_id"]]
             storage.save_model(model)
             report = evaluate_model(model, sessions)
             path = storage.DATA_DIR / "reports" / f"{model['model_id']}_evaluation.json"

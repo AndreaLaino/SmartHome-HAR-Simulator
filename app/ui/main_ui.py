@@ -41,6 +41,7 @@ from app.ui.device_inspector import (
     redo_last_movement,
 )
 from app.ui.tool_palette import ToolPalette
+from app.ui.training_panel import toggle_training_panel
 from app.ui.theme import apply_theme_tree, get_theme_palette, set_theme_role
 from app.controllers.llm_smartmeter import open_llm_smartmeter_ui
 from app.ui.rooms import open_rooms_ui
@@ -243,13 +244,16 @@ def build_home_ui(ctx: AppContext):
         side=tk.RIGHT,
     )
 
-    h_scroll = tk.Scrollbar(image_frame, orient=tk.HORIZONTAL)
+    # Keep the tool palette visible while the map makes room for training.
+    map_frame = set_theme_role(tk.Frame(image_frame), "background")
+    h_scroll = tk.Scrollbar(map_frame, orient=tk.HORIZONTAL)
     h_scroll.pack(side=tk.BOTTOM, fill=tk.X)
-    v_scroll = tk.Scrollbar(image_frame, orient=tk.VERTICAL)
+    v_scroll = tk.Scrollbar(map_frame, orient=tk.VERTICAL)
     v_scroll.pack(side=tk.RIGHT, fill=tk.Y)
 
     tool_palette = ToolPalette(image_frame)
     tool_palette.pack(side=tk.LEFT, fill=tk.Y, padx=(0, 5))
+    map_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
     ctx._tool_palette = tool_palette
     tool_palette.add_tool(
         "select",
@@ -308,9 +312,14 @@ def build_home_ui(ctx: AppContext):
         "delete", "delete", "Delete selected object (⌘Delete on Mac / Delete)",
         lambda: delete_selected_object(ctx),
     )
+    tool_palette.add_separator()
+    tool_palette.add_tool(
+        "learn", "learn", "Training activities\nShow or hide activity recording below the map.",
+        lambda: toggle_training_panel(ctx, map_frame, h_scroll),
+    )
 
     canvas = tk.Canvas(
-        image_frame,
+        map_frame,
         width=900,
         height=900,
         xscrollcommand=h_scroll.set,

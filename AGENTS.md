@@ -68,7 +68,7 @@ reorganizing it as part of an unrelated task.
 | Consumption-cycle pipeline | `LLM/smartmeter/common/cycle_pipeline.py`, `LLM/smartmeter/common/params.py`: extraction, DTW/clustering, K selection, representative cycles, and profile artifacts, invoked through the simulator controller. |
 | Profile UI and interpretation | `app/controllers/llm_smartmeter.py`: pipeline orchestration, partial-cycle completion, runtime profile selection, and archives; `LLM/smartmeter/common/llm_interpreter.py`: optional LLM descriptions. |
 | Learned HAR | `har/catalogue.py`, `har/features.py`, `har/learning.py`: shared categories, temporal features, supervised models, and evaluation. |
-| HAR runtime and UI | `har/runtime.py`, `har/storage.py`, `activity.py`, `app/ui/learned_har.py`: observations, recording, persistence, inference, activity intervals, and configuration UI. |
+| HAR runtime and UI | `har/runtime.py`, `har/storage.py`, `activity.py`, `app/ui/learned_har.py`, `app/ui/training_panel.py`: observations, recording, persistence, inference, activity intervals, configuration UI, and quick activity recording below the map. |
 | HAR examples | `har/demo.py`, `examples/learned_har/`, `docs/learned_har_it.md`: explicit synthetic demo, example houses, and user guide. |
 | Standalone utilities | `scripts/convert_item_power_to_smartmeter.py` converts input data; `irrigation_controller.py` is an independent irrigation example with placeholder hardware. |
 | Dependencies and validation | `pyproject.toml`, `tests/`, `TESTING.md`, `.github/workflows/tests.yml`: packaging, dependencies, regression tests, coverage, and cross-platform CI. |

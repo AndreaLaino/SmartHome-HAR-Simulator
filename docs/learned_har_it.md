@@ -22,7 +22,7 @@ schede: **1 · Categories**, **2 · Record sessions**, **3 · Train & evaluate**
    aggiunte sessioni generate da uno script per la casa `demo-source` e per
    `demo-target`. Non sono registrazioni della casa aperta.
 4. Lascia selezionata la sorgente **Demo: Oven / TV** e premi
-   **Train & evaluate on target houses**. Attendi il risultato e annota l'ID del
+   **Train & evaluate on target houses**. Attendi il risultato e annota il nome del
    modello in **Saved model**. I dati destinatari vengono usati per il test,
    non per l'addestramento.
 5. Apri da **File → Open file**
@@ -53,6 +53,35 @@ proprio ciclo, impostato a tre minuti simulati. Questi profili non sono misure
 reali di un particolare prodotto.
 
 ## Registrare una prova propria
+
+### Pannello rapido sotto la mappa
+
+Premi il **cappello di laurea** nella barra a sinistra per aprire il pannello.
+Seleziona una o più attività realmente svolte, scegli **Source (training)** per
+la casa sorgente oppure **Target (test)** per le prove nella casa destinataria,
+poi premi **Record**. Il pannello apre Manual e avvia o riprende l'orologio.
+Durante la registrazione cambia i pulsanti quando cambia l'attività: le etichette
+valgono da quel momento, senza modificare le osservazioni precedenti.
+
+**No activity (idle)** indica esplicitamente che nessuna attività è in corso.
+Nessun pulsante selezionato lascia invece le osservazioni senza etichetta.
+**Add activity** aggiunge un nome riutilizzabile anche nelle altre case; i nomi
+personalizzati sono salvati in `har_data/activities.json`. Per riconoscere una
+nuova attività occorre raccogliere esempi etichettati e addestrare il modello.
+I pulsanti non impongono le predizioni del modello.
+
+Sono disponibili 12 attività predefinite: `cooking`, `eating`, `relaxing`,
+`sleeping`, `working`, `cleaning`, `laundry`, `washing dishes`,
+`using the bathroom`, `showering`, `leaving home` e `returning home`.
+Il pannello aggiunge anche i nomi personalizzati e quelli presenti nelle
+registrazioni e nei modelli salvati. La presenza del pulsante non significa che
+il modello abbia già imparato quell'attività.
+
+**Stop & save** salva la sessione e termina la registrazione; l'orologio conserva
+il proprio controllo Start/Stop. Prima di una nuova sessione indipendente premi
+**Reset**. Richiudere il pannello con il cappello non interrompe la registrazione.
+**Train & models…** apre la finestra esistente sulla scheda di addestramento.
+Da lì restano accessibili anche categorie, nome e identità della casa.
 
 ### 1. Categorie e identità della casa
 
@@ -126,6 +155,14 @@ house**. Salva lo scenario. Le nuove osservazioni vengono elaborate con quel
 modello senza riaddestrarlo. **Evaluate selected model on target sessions**
 permette di valutare altre sessioni target mantenendo lo stesso modello.
 
+Nell'interfaccia i modelli hanno nomi come `House_A_2026-10-28_001`: nome della
+casa sorgente, data locale di creazione e numero progressivo per quel nome/data.
+Lo stesso nome compare nello stato del modello attivo. Per i vecchi modelli,
+quando manca il nome della casa nei metadati, viene recuperato dalle registrazioni
+sorgenti. Se queste informazioni non sono disponibili, il nome indica
+`Unknown_house` o `undated`. UUID, file JSON e riferimenti negli scenari restano
+invariati; i nuovi modelli salvano anche nome leggibile e nome della casa sorgente.
+
 La confidenza mostrata deriva dai voti della Random Forest e **non è calibrata**:
 non equivale alla probabilità garantita che la predizione sia corretta, né
 all'accuratezza misurata sui dati etichettati. Un modello incerto può astenersi.
@@ -152,6 +189,7 @@ una misura in chilogrammi.
 |---|---|
 | `har_data/catalogue.json` | Dizionario globale delle categorie e valori predefiniti per tipo. |
 | `har_data/sessions/` | Osservazioni, etichette e dizionario congelato di ogni registrazione. |
+| `har_data/activities.json` | Nomi personalizzati dei pulsanti attività, condivisi tra case. |
 | `har_data/models/` | Modelli addestrati e relativa configurazione. |
 | `har_data/reports/` | Risultati della valutazione. |
 | Scenario `.csv` | Pianta, oggetti, identità della casa, categorie personalizzate e ID del modello attivo. |

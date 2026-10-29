@@ -121,6 +121,26 @@ class LearnedActivityFlowTests(unittest.TestCase):
         path = finish_recording(self.house)
         self.assertEqual(storage.read_json(path)["frames"], session["frames"])
 
+    def test_target_recording_preserves_activity_unlabelled_and_explicit_no_activity(self):
+        from har.runtime import finish_recording, recording_status, set_recording_labels, start_recording
+
+        ctx = SimpleNamespace(house_state=self.house, har_config=self.sources["har_config"])
+        start_recording(ctx, partition="target")
+        for seconds, labels in ((3, ["cooking"]), (4, None), (5, [])):
+            set_recording_labels(ctx, labels)
+            self.timer.elapsed_time = timedelta(seconds=seconds)
+            self.process()
+            state = recording_status(ctx)
+            self.assertEqual(state["labels"], labels)
+            self.assertEqual(state["partition"], "target")
+            self.assertEqual(self.house.activity_state()["har_prediction"]["status"], "no_model")
+            self.assertEqual(self.house.activity_log_state()["active_activities"], {})
+        path = finish_recording(self.house)
+        saved = storage.read_json(path)
+        self.assertEqual(saved["partition"], "target")
+        self.assertEqual([frame["time_seconds"] for frame in saved["frames"]], [180, 240, 300])
+        self.assertEqual([frame["labels"] for frame in saved["frames"]], [["cooking"], None, []])
+
     def test_real_source_trained_model_recognizes_target_devices_and_updates_log(self):
         from har.catalogue import save_catalogue
         from har.demo import demo_sessions

@@ -80,13 +80,18 @@ def recording_status(ctx):
     if recording is None:
         return {"recording": False, "frames": 0, "labels": None, "session_id": None}
     return {"recording": True, "frames": len(recording["session"]["frames"]),
-            "labels": copy.deepcopy(recording["labels"]), "session_id": recording["session"]["session_id"]}
+            "labels": copy.deepcopy(recording["labels"]), "session_id": recording["session"]["session_id"],
+            "partition": recording["session"]["partition"]}
 
 
 def set_recording_labels(ctx, labels):
+    """Set current truth; None is unlabelled context, [] explicit no activity."""
     recording = ctx.house_state.values.get("har_recording")
     if recording is None:
         raise ValueError("Start recording before applying labels.")
+    if labels is None:
+        recording["labels"] = None
+        return
     if not isinstance(labels, list) or any(not isinstance(label, str) or not label.strip() for label in labels):
         raise ValueError("Provide activity names, or use an empty list for no activity.")
     recording["labels"] = sorted({label.strip() for label in labels})

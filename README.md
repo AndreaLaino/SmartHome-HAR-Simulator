@@ -70,11 +70,36 @@ houses through category-based measurements; there is no manual device-to-activit
 transfer rule. A category alone never starts an activity, and learned recognition
 requires an activated trained model.
 
+For quick recording, click the **graduation hat** in the left toolbar. A panel
+below the map offers activity buttons, **No activity (idle)**, **Add activity**,
+and **Record / Stop & save**. Select the true activities (multiple selections
+are allowed), choose **Source (training)** or **Target (test)**, then Record.
+It enters Manual mode and starts or resumes the clock automatically. Activity
+changes label subsequent observations; clearing all choices leaves them unlabelled.
+Stop & save ends recording while the simulation clock remains under its own
+Start/Stop control. Reset before recording another independent session. Hiding
+the panel leaves recording running. Custom names are shared through
+`har_data/activities.json`; adding a name does not train the model.
+**Train & models…** opens the existing training tab.
+
+The panel starts with 12 activity labels: cooking, eating, relaxing, sleeping,
+working, cleaning, laundry, washing dishes, using the bathroom, showering,
+leaving home, and returning home. **No activity (idle)** is a separate option.
+These are recording labels; recognition still requires labelled examples and
+a trained model. Custom labels and names in saved recordings/models are also listed.
+
 The window has three tabs: **Categories**, **Record sessions**, and **Train &
 evaluate**. Training uses at least three independent source simulations; target
 sessions are reserved for evaluation. **Add synthetic demo sessions** offers a
 scripted trial whose results do not measure accuracy on real people. Model vote
 confidence is uncalibrated and differs from measured test accuracy.
+
+Saved models appear in the simulator as `House_A_2026-10-28_001`: the source
+house name, local creation date and a sequence number for that name/date.
+The active-model status uses the same readable name. Existing models recover
+the source name from source recordings when available. UUIDs, JSON filenames,
+and scenario links remain unchanged; new models also retain their display name
+and source-house name in their metadata.
 
 Try the [source oven/TV scenario](examples/learned_har/source_oven_tv.csv) and
 [target microwave/console scenario](examples/learned_har/target_microwave_console.csv).

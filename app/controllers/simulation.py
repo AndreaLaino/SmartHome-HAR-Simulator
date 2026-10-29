@@ -69,6 +69,7 @@ def _cleanup_manual_sim(ctx: AppContext, expected_timer=None):
     if callable(close_timer):
         close_timer()
     setattr(ctx, 'timer_app_instance', None)
+    ctx._manual_reset_pending = False
     setattr(ctx, '_manual_runtime_sources', None)
     setattr(ctx, '_restore_manual_canvas_binding', None)
     if getattr(ctx, "simulation_menu", None) is not None:
@@ -130,6 +131,7 @@ def start_sim(ctx: AppContext):
     if not _finish_har_recording(ctx):
         return
     ctx.house_state.clear_runtime_state()
+    ctx._manual_reset_pending = False
     sensor_states_store = ctx.house_state.sensor_states()
 
     # Clean up previous widgets if they exist
@@ -211,6 +213,7 @@ def start_sim(ctx: AppContext):
     def _on_reset():
         if not _finish_har_recording(ctx):
             return False
+        ctx._manual_reset_pending = True
         close_current_activity(
             timer_app_instance,
             ctx.activity_label,

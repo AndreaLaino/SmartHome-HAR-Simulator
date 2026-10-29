@@ -44,6 +44,7 @@ from models import Device, Sensor
 from sim import interaction, render_simulation_state
 from canvas_zoom import set_zoom, to_canvas
 from har.catalogue import categories_for, default_catalogue
+from har import runtime as har_runtime, storage as har_storage
 from lighting import light_switch_position
 from utils import set_pir_fov_transparency, set_pir_fov_visibility
 
@@ -96,6 +97,7 @@ class TkSmokeTests(unittest.TestCase):
         self.stack.enter_context(patch("app.ui.bindings.autostart_bound_gpio_loggers"))
         self.stack.enter_context(patch.object(sensor, "_load_sensor_map", return_value={}))
         self.stack.enter_context(patch.object(device, "load_catalogue", return_value=default_catalogue()))
+        self.stack.enter_context(patch.object(har_storage, "DATA_DIR", self.root / "har_data"))
         # Fail immediately if a callback accidentally attempts an external call
         # or a dialog. Catch callback exceptions below because Tk reports them
         # instead of propagating them through Button.invoke().
@@ -191,6 +193,182 @@ class TkSmokeTests(unittest.TestCase):
                 self.assertLessEqual(int(label.cget("wraplength")), label.winfo_width() - 8)
                 self.assertLessEqual(label.winfo_reqwidth(), label.winfo_width())
                 self.assertLessEqual(label.winfo_reqheight(), label.winfo_height())
+
+    def open_training_panel(self):
+        self.window.geometry("1480x900")
+        self.window.deiconify()
+        self.pump()
+        hat = self.ctx._tool_palette._buttons["learn"]
+        self.assertTrue(hasattr(hat, "_tool_icon_image"))
+        hat.event_generate("<Button-1>", x=17, y=17)
+        self.pump()
+        panel = self.ctx._training_panel
+        self.assertTrue(panel.frame.winfo_ismapped())
+        return panel, hat
+
+    def test_training_hat_records_truth_saves_custom_names_and_preserves_failed_saves(self):
+        self.load_home()
+        panel, hat = self.open_training_panel()
+        self.assertEqual(set(panel.activity_buttons), {
+            "cooking", "eating", "relaxing", "sleeping", "working", "cleaning",
+            "laundry", "washing dishes", "using the bathroom", "showering",
+            "leaving home", "returning home",
+        })
+        panel.activity_canvas.yview_moveto(1)
+        self.pump()
+        last_button = panel.activity_buttons["returning home"]
+        self.assertGreaterEqual(last_button.winfo_rooty(), panel.activity_canvas.winfo_rooty())
+        self.assertLessEqual(
+            last_button.winfo_rooty() + last_button.winfo_height(),
+            panel.activity_canvas.winfo_rooty() + panel.activity_canvas.winfo_height(),
+        )
+        panel.activity_canvas.yview_moveto(0)
+        self.assertGreaterEqual(panel.frame.winfo_y(), self.ctx.canvas.winfo_y() + self.ctx.canvas.winfo_height())
+        self.assertGreater(self.ctx.canvas.winfo_height(), 180)
+        panel.no_activity_button.invoke()
+        panel.record_button.invoke()
+        timer = self.ctx.timer_app_instance
+        self.assertTrue(timer.is_running)
+        session = self.ctx.house_state.values["har_recording"]["session"]
+        self.assertEqual(session["partition"], "source")
+        self.assertEqual(session["frames"][0]["labels"], [])
+        self.assertEqual(str(panel.partition_combo.cget("state")), "disabled")
+        last_button.invoke()
+        timer.advance_button.invoke()
+        self.assertEqual(session["frames"][-1]["labels"], ["returning home"])
+        last_button.invoke()
+        panel.activity_buttons["cooking"].invoke()
+        panel.activity_buttons["relaxing"].invoke()
+        self.assertFalse(panel.no_activity.get())
+        timer.advance_button.invoke()
+        self.assertEqual(session["frames"][-1]["labels"], ["cooking", "relaxing"])
+        self.assertIn("no trained model", self.ctx.activity_label.cget("text"))
+        self.assertEqual(self.ctx.house_state.activity_state()["har_prediction"]["status"], "no_model")
+
+        panel.add_button.invoke()
+        panel.new_activity.set("reading")
+        panel.save_activity_button.invoke()
+        self.assertEqual(har_storage.load_activity_names(), ["reading"])
+        self.assertEqual(har_runtime.recording_status(self.ctx)["labels"], ["cooking", "relaxing"])
+        panel.activity_buttons["reading"].invoke()
+        timer.advance_button.invoke()
+        self.assertEqual(session["frames"][-1]["labels"], ["cooking", "reading", "relaxing"])
+
+        with patch.object(har_storage, "save_session", side_effect=OSError("disk full")):
+            panel.stop_button.invoke()
+        self.assertIn("disk full", panel.status.get())
+        self.assertTrue(har_runtime.recording_status(self.ctx)["recording"])
+        self.assertEqual(str(panel.stop_button.cget("state")), "normal")
+        identifier = session["session_id"]
+        hat.event_generate("<Button-1>", x=17, y=17)
+        self.pump()
+        self.assertFalse(panel.visible)
+        self.assertIsNone(panel._poll_job)
+        timer.advance_button.invoke()
+        hat.event_generate("<Button-1>", x=17, y=17)
+        self.pump()
+        self.assertTrue(panel.visible)
+        self.assertEqual(har_runtime.recording_status(self.ctx)["session_id"], identifier)
+        self.assertEqual(panel.selected_labels(), ["cooking", "reading", "relaxing"])
+        panel.stop_button.invoke()
+        saved, = har_storage.list_sessions()
+        self.assertEqual(saved["session_id"], identifier)
+        self.assertTrue(any(frame["labels"] == ["returning home"] for frame in saved["frames"]))
+        self.assertGreaterEqual(len(saved["frames"]), 45)
+        self.assertFalse(har_runtime.recording_status(self.ctx)["recording"])
+        self.assertTrue(timer.is_running)  # Stop & save affects recording, not the clock.
+
+    def test_training_record_resumes_existing_timer_and_starts_fresh_after_reset(self):
+        self.load_home()
+        self.ctx.simulation_menu.invoke("Manual")
+        timer = self.ctx.timer_app_instance
+        panel, _hat = self.open_training_panel()
+        panel.partition.set("Target (test)")
+        panel.activity_buttons["cooking"].invoke()
+        panel.record_button.invoke()
+        self.assertIs(self.ctx.timer_app_instance, timer)
+        self.assertTrue(timer.is_running)
+        first = self.ctx.house_state.values["har_recording"]["session"]
+        self.assertEqual(first["partition"], "target")
+        self.assertEqual(first["frames"][0]["labels"], ["cooking"])
+        timer.advance_button.invoke()
+        panel.stop_button.invoke()
+        elapsed = timer.elapsed_time
+        panel.record_button.invoke()
+        self.assertEqual(timer.elapsed_time, elapsed)
+        second = self.ctx.house_state.values["har_recording"]["session"]
+        self.assertEqual(second["simulation_session_id"], first["simulation_session_id"])
+        timer.advance_button.invoke()
+        timer.reset_button.invoke()
+        self.assertTrue(self.ctx._manual_reset_pending)
+        with self.assertRaisesRegex(ValueError, "Reset is finishing"):
+            panel.record()
+        self.assertFalse(har_runtime.recording_status(self.ctx)["recording"])
+        deadline = time.monotonic() + 2
+        while (self.ctx.timer_app_instance is not None or str(panel.record_button.cget("state")) != "normal") and time.monotonic() < deadline:
+            self.pump()
+            time.sleep(.02)
+        self.assertIsNone(self.ctx.timer_app_instance)
+        self.assertIsNone(panel.selected_labels())
+        self.assertEqual(panel.partition.get(), "Target (test)")
+        panel.activity_buttons["cooking"].invoke()
+        panel.record_button.invoke()
+        self.assertIsNot(self.ctx.timer_app_instance, timer)
+        self.assertTrue(self.ctx.timer_app_instance.is_running)
+        third = self.ctx.house_state.values["har_recording"]["session"]
+        self.assertNotEqual(third["simulation_session_id"], first["simulation_session_id"])
+        self.assertEqual(third["partition"], "target")
+        self.assertEqual(third["frames"][0]["labels"], ["cooking"])
+        panel.stop_button.invoke()
+        self.assertEqual(len(har_storage.list_sessions()), 3)
+
+    def test_training_panel_tracks_advanced_recording_house_change_and_shared_activity_names(self):
+        self.load_home()
+        har_storage.save_activity_names(["reading a very long book while sitting comfortably"])
+        panel, _hat = self.open_training_panel()
+        panel.models_button.invoke()
+        editor = self.ctx._learned_har_window
+        self.assertEqual(editor.tabs.select(), str(editor.train_tab))
+        self.ctx.simulation_menu.invoke("Manual")
+        editor.house_name.set("Source with custom activity")
+        editor.partition.set("target")
+        editor.start_button.invoke()
+        editor.labels.set("custom from advanced UI")
+        editor.apply_labels()
+        panel.refresh()
+        self.assertEqual(panel.selected_labels(), ["custom from advanced UI"])
+        self.assertEqual(panel.partition.get(), "Target (test)")
+        self.assertEqual(str(panel.record_button.cget("state")), "disabled")
+        self.ctx.timer_app_instance.start_stop_button.invoke()
+        self.ctx.timer_app_instance.advance_button.invoke()
+        old_id = self.ctx.har_config["house_id"]
+        self.load_home()  # This must save, close the old editor and detach the old timer.
+        panel.refresh()
+        self.assertNotEqual(self.ctx.har_config["house_id"], old_id)
+        self.assertIsNone(panel.selected_labels())
+        self.assertEqual(panel.partition.get(), "Source (training)")
+        self.assertIsNone(self.ctx._learned_har_window)
+        saved, = har_storage.list_sessions()
+        self.assertEqual(saved["frames"][-1]["labels"], ["custom from advanced UI"])
+        panel.frame.destroy()
+        self.assertIsNone(self.ctx._training_panel)
+        self.assertIsNone(panel._poll_job)
+        replacement, _hat = self.open_training_panel()
+        long_name = "reading a very long book while sitting comfortably"
+        self.assertIn(long_name, replacement.activity_buttons)
+        self.assertIn("custom from advanced UI", replacement.activity_buttons)
+        observed_columns = []
+        for geometry in ("1480x900", "720x800", "1480x900"):
+            self.window.geometry(geometry)
+            self.pump()
+            observed_columns.append(replacement._columns)
+            for button in [replacement.no_activity_button, *replacement.activity_buttons.values()]:
+                self.assertLessEqual(int(button.cget("wraplength")), button.winfo_width())
+                self.assertGreaterEqual(button.winfo_width(), 100)
+            hat = self.ctx._tool_palette._buttons["learn"]
+            self.assertLessEqual(hat.winfo_y() + hat.winfo_height(), hat.master.winfo_height())
+        self.assertLess(observed_columns[1], observed_columns[0])
+        self.assertEqual(observed_columns[2], observed_columns[0])
 
     def test_pir_slider_preserves_real_alpha_zoom_and_image_lifecycle(self):
         self.load_home()
