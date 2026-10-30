@@ -114,6 +114,9 @@ def format_evaluation(report: dict) -> str:
             if isinstance(scores, dict):
                 parts = [f"{key} {100 * scores[key]:.1f}%" for key in ("precision", "recall", "f1")
                          if isinstance(scores.get(key), (int, float))]
+                coverage = report.get("per_activity_coverage", {}).get(name)
+                if isinstance(coverage, (int, float)):
+                    parts.append(f"coverage {100 * coverage:.1f}%")
                 lines.append(f"  {name}: {', '.join(parts)}")
     if not count:
         lines.append("\nRecord labelled target sessions to measure transfer performance.")
@@ -461,7 +464,8 @@ class LearnedHARWindow:
         frame.columnconfigure(1, weight=1)
         frame.rowconfigure(5, weight=1)
         ttk.Label(frame, text=("Train from at least 3 independent labelled SOURCE sessions. Complete sessions are kept separate "
-                              "for training, validation and source testing. Target data is used only for evaluation."),
+                              "for training, validation and source testing. Each activity has an independent detector. "
+                              "Target data is used only for evaluation."),
                   wraplength=990).grid(row=0, column=0, columnspan=3, sticky="ew", pady=(0, 10))
         ttk.Label(frame, text="Source house").grid(row=1, column=0, sticky="w")
         self.source = tk.StringVar()

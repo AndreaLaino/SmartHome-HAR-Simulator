@@ -65,7 +65,7 @@ model predictions, activity intervals and polling.
 
 Open **Scenario > Learned activity recognition…** to assign shared object
 categories, record observations with human activity labels, and train a Random
-Forest on a source house. The same model can recognize activities in other
+Forest for each activity on a source house. The same model can recognize activities in other
 houses through category-based measurements; there is no manual device-to-activity
 transfer rule. A category alone never starts an activity, and learned recognition
 requires an activated trained model.
@@ -93,6 +93,25 @@ evaluate**. Training uses at least three independent source simulations; target
 sessions are reserved for evaluation. **Add synthetic demo sessions** offers a
 scripted trial whose results do not measure accuracy on real people. Model vote
 confidence is uncalibrated and differs from measured test accuracy.
+
+New models use independent binary activity classifiers (one forest per label).
+Each tree can compare all input features when selecting its splits, so a strong
+sensor signal is not excluded by a random subset of the sparse category channels.
+Each activity has its own confidence and abstention decision: an uncertain label
+does not suppress other confident activities. The status panel lists confident
+activities with their confidence and marks uncertain activities separately.
+Training time and model size can increase as more activities are learned.
+Evaluation reports include per-activity coverage (the fraction of observations
+with a confident decision); exact-set accuracy requires all labels to be confident.
+
+Separate activities can be reported simultaneously without creating a combined
+activity label. Recognition of unseen simultaneous activities still depends on
+distinguishable, representative observations; it is not guaranteed by classifier
+independence. The synthetic regression checks this behavior with two distinct
+sensor channels and renamed sensors/devices in another house, not real people.
+Existing version-1 joint models remain loadable with their original prediction
+and whole-set abstention behavior. Train and activate a new model from your saved
+source sessions to use independent detection; old models are not rewritten.
 
 Saved models appear in the simulator as `House_A_2026-10-28_001`: the source
 house name, local creation date and a sequence number for that name/date.

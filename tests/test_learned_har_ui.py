@@ -86,9 +86,11 @@ class LearnedHARPresentationTests(unittest.TestCase):
         text = format_evaluation({"labelled_samples": 10, "exact_match_accuracy": .8,
                                   "micro_f1": .9, "test_houses": ["target"],
                                   "excluded_source_sessions": 3,
+                                  "per_activity_coverage": {"cooking": .8},
                                   "per_activity": {"cooking": {"precision": 1, "recall": .75, "f1": .86}}})
         self.assertIn("Exact activity-set accuracy: 80.0%", text)
         self.assertIn("cooking: precision 100.0%", text)
+        self.assertIn("coverage 80.0%", text)
         self.assertIn("Source sessions excluded: 3", text)
         self.assertIn("Record labelled target sessions", format_evaluation({"labelled_samples": 0}))
         self.assertIn("SYNTHETIC DEMONSTRATION", format_evaluation({"labelled_samples": 10, "scope": "synthetic"}))

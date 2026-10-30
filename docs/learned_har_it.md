@@ -169,6 +169,32 @@ all'accuratezza misurata sui dati etichettati. Un modello incerto può astenersi
 
 ## Attività simultanee e dizionario condiviso
 
+I nuovi modelli addestrano una Random Forest binaria indipendente per ogni
+attività. Ogni albero confronta tutti gli ingressi quando sceglie una divisione:
+il segnale più informativo per quell'attività non viene escluso da un sottoinsieme
+casuale dei canali di categoria. Non esistono associazioni manuali sensore-attività;
+sono i dati etichettati della sorgente a determinare le divisioni degli alberi.
+
+Ogni attività ha una propria confidenza e una decisione di astensione. Se
+`eating` è incerta e `relaxing` è riconosciuta con sicurezza, il simulatore mostra
+e registra `relaxing`, indicando separatamente l'incertezza su `eating`.
+Quando entrambe sono riconosciute, compaiono entrambe come attività distinte.
+La confidenza accanto a ciascuna attività resta non calibrata. La coverage per
+attività nel report indica la quota di osservazioni con una decisione sicura;
+l'accuratezza dell'insieme completo richiede che tutte le attività siano decise.
+
+Questa struttura permette rilevamenti simultanei anche senza aver dato un nome
+nuovo alla loro presenza contemporanea. Per attività simultanee mai osservate
+nel training la qualità dipende comunque da segnali distinguibili e dati vari:
+non viene garantita dal solo cambio di classificatore. I test sintetici verificano
+un caso controllato con due canali sensoriali diversi e una casa destinataria con
+nomi e dispositivi differenti; non misurano l'accuratezza su persone reali.
+
+I vecchi modelli di versione 1 restano utilizzabili con il comportamento originale,
+compresa l'astensione sull'intero insieme di attività. Per usare i nuovi rilevatori,
+addestra e attiva un nuovo modello dalle registrazioni sorgenti già salvate.
+I modelli precedenti non vengono modificati automaticamente.
+
 Per attività simultanee puoi applicare più etichette, ad esempio
 `cooking, relaxing`. Non esistono regole automatiche per dedurre «eating» dopo
 «cooking» o per creare attività composte: eventuali etichette aggiuntive devono

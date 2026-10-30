@@ -61,7 +61,7 @@ def process_activities(
         }
     state["har_prediction"] = result
     detected = result.get("activities", []) if (
-        result.get("status") == "ready" and not result.get("abstained")
+        result.get("status") == "partial" or (result.get("status") == "ready" and not result.get("abstained"))
     ) else []
     update_activity_state(now, detected, state, log_state)
     if activity_label is not None:
@@ -70,6 +70,14 @@ def process_activities(
 
 def _learned_activity_text(result):
     status = result.get("status")
+    if status in {"ready", "partial", "uncertain"} and "activity_confidences" in result:
+        confidences = result["activity_confidences"]
+        activities = ", ".join(f"{name} ({confidences[name]:.0%})" for name in sorted(result["activities"]))
+        text = "Activities (ML): " + (activities or ("None" if status == "ready" else "none confirmed"))
+        uncertain = result.get("uncertain_activities", [])
+        if uncertain:
+            text += "\nUncertain: " + ", ".join(f"{name} ({confidences[name]:.0%})" for name in uncertain)
+        return text + "\nConfidence is uncalibrated."
     if status == "ready" and not result.get("abstained"):
         activities = ", ".join(sorted(result.get("activities", []))) or "None"
         text = "Activities (ML): " + activities

@@ -47,7 +47,7 @@ class LearnedCategoryModelTests(unittest.TestCase):
                 session["frames"] = [{"arbitrary": "target data must never be inspected during fitting"}]
                 session["catalogue"] = {}
         other = train_source(changed, "demo-source")
-        for key in ("trees", "labels", "catalogue", "feature_names", "source_training_sessions", "training_samples"):
+        for key in ("classifiers", "labels", "catalogue", "feature_names", "source_training_sessions", "training_samples"):
             self.assertEqual(self.model[key], other[key], key)
 
     def test_activity_names_are_learned_labels_instead_of_fixed_category_rules(self):
@@ -140,13 +140,38 @@ class LearnedCategoryModelTests(unittest.TestCase):
                 self.assertAlmostEqual(actual[label], expected[column][0, 1])
 
     def test_invalid_or_cyclic_tree_is_rejected_before_activation(self):
-        index = next(index for index, left in enumerate(self.model["trees"][0]["left"]) if left != -1)
+        label = self.model["labels"][0]
+        index = next(index for index, left in enumerate(self.model["classifiers"][label]["trees"][0]["left"]) if left != -1)
         for field, value in (("left", 0.5), ("feature", True), ("left", index)):
             with self.subTest(field=field, value=value):
                 invalid = copy.deepcopy(self.model)
-                invalid["trees"][0][field][index] = value
+                invalid["classifiers"][label]["trees"][0][field][index] = value
                 with self.assertRaises(ValueError):
                     validate_model(invalid)
+
+    def test_original_joint_model_json_keeps_its_predictions_and_whole_set_abstention(self):
+        legacy = copy.deepcopy(self.model)
+        legacy.pop("classifiers")
+        legacy.update(schema_version=1, kind="category_random_forest", threshold=.5, minimum_certainty=.55)
+        legacy["trees"] = [{"left": [-1], "right": [-1], "feature": [-2], "threshold": [-2.0],
+                            "positive": [[.9, .2]]}]
+        vector = [0] * len(legacy["feature_names"])
+        with tempfile.TemporaryDirectory() as temp, patch.object(storage, "DATA_DIR", Path(temp)):
+            path = storage.save_model(legacy)
+            before = path.read_bytes()
+            loaded = validate_model(storage.load_model(legacy["model_id"]))
+            result = predict_vector(loaded, vector)
+            self.assertEqual(result["activities"], ["cooking"])
+            self.assertEqual(result["status"], "ready")
+            self.assertAlmostEqual(result["confidence"], .8)
+            self.assertNotIn("activity_confidences", result)
+            self.assertEqual(path.read_bytes(), before)
+            self.assertEqual(loaded, legacy)
+        legacy["trees"][0]["positive"][0][1] = .5
+        result = predict_vector(validate_model(legacy), vector)
+        self.assertTrue(result["abstained"])
+        self.assertEqual(result["status"], "uncertain")
+        self.assertEqual(result["activities"], [])
 
     def test_multiple_recordings_in_one_simulation_cannot_be_split_as_independent(self):
         changed = copy.deepcopy(self.sessions)

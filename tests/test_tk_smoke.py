@@ -185,6 +185,12 @@ class TkSmokeTests(unittest.TestCase):
             for result in (
                 {"status": "ready", "activities": ["cooking"], "confidence": .75},
                 {"status": "ready", "activities": ["cooking", "relaxing"], "confidence": .75},
+                {"status": "ready", "activities": ["eating", "relaxing"],
+                 "activity_confidences": {"eating": .8, "relaxing": .9}},
+                {"status": "partial", "activities": ["relaxing"], "abstained": True,
+                 "activity_confidences": {"eating": .52, "relaxing": .9}, "uncertain_activities": ["eating"]},
+                {"status": "uncertain", "activities": [], "abstained": True,
+                 "activity_confidences": {"eating": .52, "relaxing": .51}, "uncertain_activities": ["eating", "relaxing"]},
                 {"status": "no_model"},
             ):
                 label.configure(text=_learned_activity_text(result))
@@ -782,7 +788,9 @@ class TkSmokeTests(unittest.TestCase):
                         time.sleep(.02)
                     self.assertIn(f"Frames: {count}", ui.recording_text.get())
                     self.assertTrue(all(item.state == 1 for item in self.ctx.read_devices))
-                    self.assertIn(self.ctx.house_state.activity_state()["har_prediction"]["status"], ("ready", "uncertain"))
+                    prediction = self.ctx.house_state.activity_state()["har_prediction"]
+                    self.assertIn(prediction["status"], ("ready", "partial", "uncertain"))
+                    self.assertFalse(set(prediction["activities"]) & set(prediction["uncertain_activities"]))
                     ui.stop_button.invoke()
                     timer.start_stop_button.invoke()
                     for appliance in self.ctx.read_devices:

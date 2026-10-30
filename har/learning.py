@@ -2,6 +2,7 @@
 
 Models contain portable JSON trees. Category names define measurements, not
 activity rules; activity classes come exclusively from labelled source examples.
+New models fit independent forests; original joint JSON models remain readable.
 """
 
 from __future__ import annotations
@@ -69,7 +70,9 @@ def validate_model(model):
 
 
 def _validate_model(model):
-    if not isinstance(model, dict) or model.get("schema_version") != 1 or model.get("kind") != "category_random_forest":
+    if not isinstance(model, dict) or (model.get("schema_version"), model.get("kind")) not in {
+        (1, "category_random_forest"), (2, "independent_category_random_forest"),
+    }:
         raise ValueError("This is not a learned category-based HAR model.")
     safe_identifier(model.get("model_id"))
     safe_identifier(model.get("source_house_id"))
@@ -97,11 +100,25 @@ def _validate_model(model):
     encoder = FeatureEncoder(catalogue, model.get("window_seconds"))
     if model.get("feature_names") != encoder.feature_names:
         raise ValueError("Model input schema does not match its category dictionary.")
-    for field in ("threshold", "minimum_certainty"):
-        value = model.get(field)
-        if not isinstance(value, (int, float)) or not math.isfinite(value) or not 0 <= value <= 1:
-            raise ValueError(f"Invalid model {field}.")
-    trees = model.get("trees")
+    if model["schema_version"] == 1:
+        detectors = [(model, len(labels))]
+    else:
+        classifiers = model.get("classifiers")
+        if not isinstance(classifiers, dict) or set(classifiers) != set(labels):
+            raise ValueError("Each activity needs its own trained classifier.")
+        detectors = [(classifiers[label], 1) for label in labels]
+    for detector, output_count in detectors:
+        if not isinstance(detector, dict):
+            raise ValueError("Invalid activity classifier.")
+        for field in ("threshold", "minimum_certainty"):
+            value = detector.get(field)
+            if not isinstance(value, (int, float)) or not math.isfinite(value) or not 0 <= value <= 1:
+                raise ValueError(f"Invalid model {field}.")
+        _validate_forest(detector.get("trees"), len(encoder.feature_names), output_count)
+    return model
+
+
+def _validate_forest(trees, feature_count, output_count):
     if not isinstance(trees, list) or not trees:
         raise ValueError("The model has no trained trees.")
     for tree in trees:
@@ -119,10 +136,10 @@ def _validate_model(model):
             if (left == -1) != (right == -1):
                 raise ValueError("Invalid trained tree children.")
             if left != -1 and (not 0 <= left < size or not 0 <= right < size
-                               or not 0 <= tree["feature"][index] < len(encoder.feature_names)):
+                               or not 0 <= tree["feature"][index] < feature_count):
                 raise ValueError("Invalid trained tree input or child index.")
             values = tree["positive"][index]
-            if not isinstance(values, list) or len(values) != len(labels) or any(not isinstance(v, (int, float)) or not math.isfinite(v) or not 0 <= v <= 1 for v in values):
+            if not isinstance(values, list) or len(values) != output_count or any(not isinstance(v, (int, float)) or not math.isfinite(v) or not 0 <= v <= 1 for v in values):
                 raise ValueError("Invalid trained probabilities.")
             if not isinstance(tree["threshold"][index], (int, float)) or not math.isfinite(tree["threshold"][index]):
                 raise ValueError("Invalid tree threshold.")
@@ -136,7 +153,6 @@ def _validate_model(model):
                 pending.extend((tree["left"][index], tree["right"][index]))
         if len(reached) != size:
             raise ValueError("Trained tree has unreachable nodes.")
-    return model
 
 
 def predict_vector(model, vector):
@@ -149,8 +165,36 @@ def predict_vector(model, vector):
         vector = np.asarray(vector, dtype=np.float32).tolist()
     if any(not math.isfinite(value) for value in vector):
         raise ValueError("Observation features exceed the model's numeric range.")
-    probabilities = [0.0] * len(model["labels"])
-    for tree in model["trees"]:
+    if model.get("kind") == "independent_category_random_forest":
+        scores, confidences, uncertain, activities = {}, {}, [], []
+        for label in model["labels"]:
+            detector = model["classifiers"][label]
+            probability = _forest_probabilities(detector["trees"], vector, 1)[0]
+            scores[label] = probability
+            certainty = confidences[label] = max(probability, 1 - probability)
+            if certainty + 1e-12 < detector["minimum_certainty"]:
+                uncertain.append(label)
+            elif probability >= detector["threshold"]:
+                activities.append(label)
+        status = "ready" if not uncertain else ("uncertain" if len(uncertain) == len(scores) else "partial")
+        return {"activities": activities, "probabilities": scores, "activity_confidences": confidences,
+                "uncertain_activities": uncertain, "confidence": min(confidences.values()),
+                "abstained": bool(uncertain), "status": status,
+                "message": "Independent activity predictions (uncalibrated forest votes)."}
+    # Preserve the original joint model's whole-set abstention semantics.
+    probabilities = _forest_probabilities(model["trees"], vector, len(model["labels"]))
+    scores = dict(zip(model["labels"], probabilities))
+    confidence = min(max(value, 1 - value) for value in probabilities)
+    abstained = confidence + 1e-12 < model["minimum_certainty"]
+    activities = [label for label, probability in scores.items() if probability >= model["threshold"]]
+    return {"activities": [] if abstained else activities, "probabilities": scores, "confidence": confidence,
+            "abstained": abstained, "status": "uncertain" if abstained else "ready",
+            "message": "Model uncertain." if abstained else "Trained model prediction (uncalibrated forest votes)."}
+
+
+def _forest_probabilities(trees, vector, output_count):
+    probabilities = [0.0] * output_count
+    for tree in trees:
         index, visited = 0, 0
         while tree["left"][index] != -1:
             visited += 1
@@ -159,14 +203,8 @@ def predict_vector(model, vector):
             feature = tree["feature"][index]
             index = tree["left"][index] if vector[feature] <= tree["threshold"][index] else tree["right"][index]
         for column, value in enumerate(tree["positive"][index]):
-            probabilities[column] += value / len(model["trees"])
-    scores = dict(zip(model["labels"], probabilities))
-    confidence = min(max(value, 1 - value) for value in probabilities)
-    abstained = confidence + 1e-12 < model["minimum_certainty"]
-    activities = [label for label, probability in scores.items() if probability >= model["threshold"]]
-    return {"activities": [] if abstained else activities, "probabilities": scores, "confidence": confidence,
-            "abstained": abstained, "status": "uncertain" if abstained else "ready",
-            "message": "Model uncertain." if abstained else "Trained model prediction (uncalibrated forest votes)."}
+            probabilities[column] += value / len(trees)
+    return probabilities
 
 
 def _score(model, sessions):
@@ -202,6 +240,11 @@ def _score(model, sessions):
             "macro_f1": sum(row["f1"] for row in per_activity.values()) / len(classes) if expected and classes else None,
             "per_activity": per_activity, "unknown_activities": sorted(set(classes) - set(model["labels"])),
             "coverage": sum(not row["abstained"] for row in records) / len(records) if records else None,
+            "per_activity_coverage": {
+                label: sum(label not in row.get("uncertain_activities", model["labels"] if row["abstained"] else [])
+                           for row in records) / len(records) if records else None
+                for label in model["labels"]
+            },
             "predictions": records}
 
 
@@ -243,14 +286,19 @@ def train_source(sessions, source_house_id, *, window_seconds=600, seed=42):
     y = np.asarray([[int(label in truth) for label in labels] for _, truth in rows], dtype=np.int8)
     if any(len(set(y[:, column])) < 2 for column in range(len(labels))):
         raise ValueError("Each training activity needs positive and negative examples. Label idle frames as No activity.")
-    forest = RandomForestClassifier(n_estimators=128, max_depth=12, min_samples_leaf=2,
-                                    class_weight="balanced_subsample", random_state=seed, n_jobs=1)
-    forest.fit(x, y[:, 0] if len(labels) == 1 else y)
-    model = {"schema_version": 1, "kind": "category_random_forest", "model_id": uuid4().hex,
+    classifiers = {}
+    for column, label in enumerate(labels):
+        # With sparse category channels, random feature subsets can favor the
+        # absence of another activity over this activity's own sensor evidence.
+        # Let each binary tree compare every observed input at each split.
+        forest = RandomForestClassifier(n_estimators=128, max_depth=12, min_samples_leaf=2,
+                                        max_features=1.0, class_weight="balanced_subsample", random_state=seed, n_jobs=1)
+        forest.fit(x, y[:, column])
+        classifiers[label] = {"trees": _export_forest(forest, 1), "threshold": .5, "minimum_certainty": .55}
+    model = {"schema_version": 2, "kind": "independent_category_random_forest", "model_id": uuid4().hex,
              "created_at": datetime.now(timezone.utc).isoformat(), "source_house_id": source_house_id,
              "labels": labels, "catalogue": catalogue, "feature_names": names,
-             "window_seconds": float(window_seconds), "threshold": .5, "minimum_certainty": .55,
-             "trees": _export_forest(forest, len(labels)),
+             "window_seconds": float(window_seconds), "classifiers": classifiers,
              "source_training_sessions": [session["session_id"] for session in training],
              "source_validation_sessions": [session["session_id"] for session in validation],
              "source_test_sessions": [session["session_id"] for session in testing],
