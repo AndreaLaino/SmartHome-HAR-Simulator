@@ -483,12 +483,15 @@ class TkSmokeTests(unittest.TestCase):
 
         first_item = rendered_image()[0]
         for transparency, alpha in ((0, 255), (50, 128), (100, 0), (75, 64), (68, 82)):
+            previous_name = rendered_image()[1]
             slider.set(transparency)
             self.pump()
             self.assertEqual(canvas._pir_fov_transparency, transparency)
             item, _name, image = rendered_image()
             left, top = canvas.coords(item)
             self.assertEqual(item, first_item)
+            self.assertNotEqual(_name, previous_name)
+            self.assertNotIn(previous_name, canvas.tk.call("image", "names"))
             self.assertEqual(image.getpixel((round(50 - left), round(100 - top)))[3], alpha)
             if transparency == 100:
                 self.assertEqual(image.getchannel("A").getextrema(), (0, 0))
@@ -948,7 +951,7 @@ class TkSmokeTests(unittest.TestCase):
         pirs.invoke("Hidden")
         self.pump()
         self.assertEqual(state("motion", "rect"), "hidden")
-        self.assertFalse(canvas.find_withtag("fov"))
+        self.assertTrue(canvas.find_withtag("fov"))
         self.assertTrue(canvas._show_pir_fov)  # Preserve the independent overlay choice.
         update_sensor_color(canvas, meter.name, 100, 0)
         self.assertEqual(state(meter.name, "rect"), "hidden")
@@ -978,7 +981,53 @@ class TkSmokeTests(unittest.TestCase):
         self.assertEqual((saved["sensor_visibility"], saved["pir_visibility"]), ("markers", "hidden"))
         self.load_home()
         self.assertEqual(state("motion", "rect"), "hidden")
+        self.assertTrue(canvas.find_withtag("fov"))
+
+    def test_associated_meter_visibility_follows_menu_values_and_survives_redraw(self):
+        from app.ui import main_ui
+
+        self.load_home()
+        canvas = self.ctx.canvas
+        menubar = self.window.nametowidget(self.window.cget("menu"))
+        settings = self.window.nametowidget(menubar.entrycget("Settings", "menu"))
+        ordinary = self.window.nametowidget(settings.entrycget("Sensors", "menu"))
+        pirs = self.window.nametowidget(settings.entrycget("PIR sensors", "menu"))
+        with patch.object(main_ui, "begin_placement_mode") as begin:
+            main_ui._menu_add_device(self.ctx)
+        create_at_click = begin.call_args.args[2]
+
+        def create_meter(name):
+            dialog = SimpleNamespace(result=(name, "Oven", 2000, 1500, 2000, "manual", "Smart Meter"))
+            with patch.object(device, "DeviceDialog", return_value=dialog):
+                self.assertTrue(create_at_click(SimpleNamespace(x=130, y=130)))
+            return next(s for s in self.ctx.read_sensors if s.associated_device == name)
+
+        meter = create_meter("first_oven")
+
+        def states(sensor):
+            return tuple(canvas.itemcget(f"{sensor.name}_{part}_sensor", "state") for part in ("rect", "text"))
+
+        for mode, expected in (("markers", ("normal", "hidden")), ("hidden", ("hidden", "hidden"))):
+            ordinary._visibility_variable.set(mode)
+            self.pump()
+            self.assertEqual(states(meter), expected)
+            self.assertEqual(self.ctx.preferences["sensor_visibility"], mode)
+        second_meter = create_meter("second_oven")
+        self.assertEqual(states(second_meter), ("hidden", "hidden"))
+        inspector._redraw_editable_objects(self.ctx)
+        self.assertEqual(states(meter), ("hidden", "hidden"))
+        self.assertEqual(states(second_meter), ("hidden", "hidden"))
+        pirs._visibility_variable.set("hidden")
+        settings._show_pir_fov_variable.set(True)
+        self.pump()
+        self.assertEqual(states(self.ctx.read_sensors[0]), ("hidden", "hidden"))
+        self.assertTrue(canvas.find_withtag("fov"))
+        settings._show_pir_fov_variable.set(False)
+        self.pump()
         self.assertFalse(canvas.find_withtag("fov"))
+        ordinary._visibility_variable.set("full")
+        self.assertEqual(states(meter), ("normal", "normal"))
+        self.assertEqual(states(second_meter), ("normal", "normal"))
 
     def test_door_drag_and_endpoint_cleanup_keep_visible_geometry_and_history_connected(self):
         self.load_home()

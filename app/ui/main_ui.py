@@ -673,16 +673,17 @@ def build_home_ui(ctx: AppContext):
         settings_menu.add_cascade(label=label, menu=visibility_menu)
         variable = tk.StringVar(value=ctx.preferences.get(preference_key, "full"))
 
-        def change_visibility(key=preference_key, is_pir=pir, selected=variable):
+        def change_visibility(*_trace, key=preference_key, is_pir=pir, selected=variable):
             mode = selected.get()
             set_sensor_visibility(ctx.canvas, mode, pir=is_pir)
             from app.ui.device_inspector import clear_selection
             clear_selection(ctx)
             save_setting(key, mode)
 
+        variable.trace_add("write", change_visibility)
         for text, mode in (("With names", "full"), ("Markers only", "markers"), ("Hidden", "hidden")):
             visibility_menu.add_radiobutton(
-                label=text, variable=variable, value=mode, command=change_visibility,
+                label=text, variable=variable, value=mode,
             )
         # Tk menus refer to variable names; retain the Python variables as well.
         visibility_menu._visibility_variable = variable
@@ -735,16 +736,17 @@ def build_home_ui(ctx: AppContext):
         value=bool(ctx.preferences.get("show_pir_fov", False))
     )
 
-    def toggle_pir_fov():
+    def toggle_pir_fov(*_trace):
         visible = bool(show_pir_fov.get())
         sensors, walls, doors = _current_pir_sources(ctx)
         set_pir_fov_visibility(ctx.canvas, sensors, visible, walls, doors)
         save_setting("show_pir_fov", visible)
 
+    show_pir_fov.trace_add("write", toggle_pir_fov)
+    settings_menu._show_pir_fov_variable = show_pir_fov
     settings_menu.add_checkbutton(
         label="Show PIR fields of view",
         variable=show_pir_fov,
-        command=toggle_pir_fov,
     )
 
     def open_pir_transparency_slider():
