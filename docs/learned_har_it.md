@@ -6,6 +6,25 @@ stessa categoria `Device_Cooking`, ma questa categoria, da sola, non avvia
 «cooking». Senza un modello addestrato e attivato non vengono prodotte attività
 apprese.
 
+La potenza usata dal riconoscimento arriva soltanto dagli Smart Meter, esterni
+oppure integrati nelle luci smart. Senza contatore il dispositivo continua a
+funzionare e consumare, ma HAR non legge il suo consumo interno. Le nuove
+registrazioni non includono il campo interno `current_consumption`; questo campo
+viene ignorato anche quando si elaborano vecchie registrazioni. Una misura
+assente ha `power_observed = 0`, mentre una lettura valida di 0 W mantiene
+`power_observed = 1`. Per gli esperimenti precedenti che utilizzavano il consumo
+interno di dispositivi senza contatore, riaddestra il modello dalle sessioni
+salvate prima di confrontare i risultati.
+
+Anche lo stato ON/OFF dei dispositivi elettrici viene ricavato soltanto dalla
+potenza misurata: oltre 0 W è ON, 0 W è OFF. Senza una lettura valida sono assenti
+entrambe le informazioni; il valore numerico di riempimento 0 non significa
+«spento», perché `power_observed = 0`. Un campione mancante esplicito non viene
+sostituito dall'ultima lettura conservata nel sensore. Lo stato elettrico interno
+non entra nei nuovi frame HAR e viene ignorato nelle vecchie registrazioni.
+Riaddestra anche i modelli precedenti che utilizzavano direttamente ON/OFF.
+Con questa convenzione, un consumo di standby maggiore di 0 W produce ON.
+
 La finestra si apre da **Scenario → Learned activity recognition…** e ha tre
 schede: **1 · Categories**, **2 · Record sessions**, **3 · Train & evaluate**.
 

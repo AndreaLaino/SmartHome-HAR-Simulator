@@ -50,6 +50,31 @@ class LearnedActivityFlowTests(unittest.TestCase):
         self.assertEqual(self.house.activity_log_state()["active_activities"], {})
         self.assertIn("no trained model", self.label.config.call_args.kwargs["text"])
 
+    def test_recording_and_reload_preserve_missing_meter_data_without_internal_state(self):
+        from har.catalogue import default_catalogue
+        from har.features import primitive_names, primitives
+        from har.runtime import start_recording, finish_recording
+
+        catalogue = default_catalogue()
+        meter = Sensor("meter", 0, 0, "Smart Meter", 0, 5000, 1, 1,
+                       consumption=1750, associated_device=self.oven.name)
+        self.sources["sensors"] = [meter]
+        self.oven.current_consumption = 1750
+        self.house.sensor_states()[meter.name] = {"consumption": [None], "state": [1]}
+        ctx = SimpleNamespace(house_state=self.house, har_config=self.sources["har_config"])
+        with patch("har.runtime.load_catalogue", return_value=catalogue):
+            start_recording(ctx)
+            self.process()
+            saved = storage.read_json(finish_recording(self.house))
+        frame = saved["frames"][0]
+        self.assertEqual(frame["sensor_states"][meter.name]["consumption"], [])
+        self.assertNotIn("state", frame["devices"][0])
+        self.assertNotIn("current_consumption", frame["devices"][0])
+        channels = dict(zip(primitive_names(catalogue), primitives(frame, catalogue)))
+        self.assertEqual(channels["device/Device_Cooking/power_observed"], 0)
+        self.assertEqual(channels["device/Device_Cooking/on_fraction"], 0)
+        self.assertEqual((self.oven.state, self.oven.current_consumption), (1, 1750))
+
     def test_callers_without_house_configuration_still_use_learned_recognition(self):
         self.sources.pop("har_config")
         self.sources["sensors"] = [Sensor("kitchen", 0, 0, "PIR", 0, 1, 1, 1, direction=0)]

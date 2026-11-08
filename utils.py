@@ -6,6 +6,7 @@ from consumption_profiles import consumption_profiles, get_device_consumption
 from lighting import LIGHT_TYPES
 from label_layout import create_map_label, layout_map_labels
 from canvas_zoom import to_canvas, to_canvas_length
+from models import is_fixture
 
 PIR_MAX_DISTANCE = 230
 PIR_FOV_ANGLE = 60
@@ -177,7 +178,7 @@ def refresh_pir_fov(canvas) -> None:
     """Redraw PIR overlays after sensors, walls, or doors change."""
     canvas.delete(PIR_FOV_TAG)
     canvas._pir_fov_images = {}
-    if getattr(canvas, "_show_pir_fov", False):
+    if getattr(canvas, "_show_pir_fov", False) and sensor_visibility(canvas, "PIR") != "hidden":
         sensors = getattr(canvas, "_pir_fov_sensors", ())
         walls = getattr(canvas, "_pir_fov_walls", ())
         doors = getattr(canvas, "_pir_fov_doors", ())
@@ -213,6 +214,22 @@ def set_pir_fov_visibility(
     refresh_pir_fov(canvas)
 
 
+def sensor_visibility(canvas, sensor_type):
+    key = "_pir_visibility" if str(sensor_type).upper() == "PIR" else "_sensor_visibility"
+    return getattr(canvas, key, "full")
+
+
+def set_sensor_visibility(canvas, mode, *, pir=False):
+    """Change map graphics only; sensor models and measurements remain active."""
+    if mode not in ("full", "markers", "hidden"):
+        raise ValueError("Unknown sensor visibility mode.")
+    setattr(canvas, "_pir_visibility" if pir else "_sensor_visibility", mode)
+    group = "pir_sensor" if pir else "other_sensor"
+    canvas.itemconfig(group, state="hidden" if mode == "hidden" else "normal")
+    canvas.itemconfig(f"{group}_label", state="normal" if mode == "full" else "hidden")
+    refresh_pir_fov(canvas)
+
+
 def draw_sensor(canvas, sensor):
     name, x, y, type_s, min_val, state = sensor.name, sensor.x, sensor.y, sensor.type, sensor.min_val, sensor.state
 
@@ -226,6 +243,8 @@ def draw_sensor(canvas, sensor):
         color = "green" if float(state) > float(min_val) else "red"
     rect_tag = f'{name}_rect_sensor'
     text_tag = f'{name}_text_sensor'
+    group = "pir_sensor" if str(type_s).upper() == "PIR" else "other_sensor"
+    mode = sensor_visibility(canvas, type_s)
     canvas_x, canvas_y = to_canvas(canvas, x, y)
     radius = to_canvas_length(canvas, 5)
     marker_id = canvas.create_rectangle(
@@ -234,7 +253,8 @@ def draw_sensor(canvas, sensor):
         canvas_x + radius,
         canvas_y + radius,
         fill=color,
-        tags=('sensor', rect_tag),
+        tags=('sensor', group, rect_tag),
+        state="hidden" if mode == "hidden" else "normal",
     )
     create_map_label(
         canvas,
@@ -242,11 +262,12 @@ def draw_sensor(canvas, sensor):
         y,
         text=name,
         fill=color,
-        tags=('sensor', 'sensor_label', text_tag),
+        tags=('sensor', 'sensor_label', group, f'{group}_label', text_tag),
         kind="sensor",
         font=("Helvetica", 9),
         hover_target=marker_id,
     )
+    canvas.itemconfig(text_tag, state="normal" if mode == "full" else "hidden")
     raise_overlay_labels(canvas)
 
 
@@ -419,6 +440,9 @@ def update_devices_consumption(canvas, devices, delta_seconds, timer_app_instanc
 
     for i in range(len(devices)):
         device = devices[i]
+        if is_fixture(device):
+            active_cycles_store.pop(device.name, None)
+            continue
         name, dx, dy, type, power, state, min_c, max_c, current_cons, cons_dir = (
             device.name,
             device.x,

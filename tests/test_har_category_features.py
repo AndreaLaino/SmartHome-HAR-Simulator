@@ -56,15 +56,123 @@ class CategoryFeatureTests(unittest.TestCase):
         frame["devices"][0]["categories"].append("TargetOnlyCategory")
         self.assertEqual(primitives(frame, self.catalogue), baseline)
 
-    def test_explicit_zero_meter_reading_overrides_on_state_and_stale_power(self):
+    def test_zero_watts_observe_off_even_if_internal_device_is_on(self):
         frame = self.frame()
         frame["sensor_states"]["meter-a"]["consumption"] = [500, 0]
         channels = self.channels(frame)
-        self.assertEqual(channels["device/Device_Cooking/on_fraction"], 1)
+        self.assertEqual(channels["device/Device_Cooking/on_fraction"], 0)
         self.assertEqual(channels["device/Device_Cooking/power_w"], 0)
         self.assertEqual(channels["device/Device_Cooking/power_observed"], 1)
         self.assertEqual(channels["sensor/Sensor_Power/value"], 0)
         self.assertEqual(channels["sensor/Sensor_Power/observed"], 1)
+
+    def test_unmetered_internal_consumption_never_becomes_a_power_observation(self):
+        frame = self.frame()
+        frame["sensors"] = []
+        # A deleted meter may still have historical samples; it no longer observes.
+        channels = self.channels(frame)
+        self.assertEqual(channels["device/Device_Cooking/power_observed"], 0)
+        self.assertEqual(channels["device/Device_Cooking/power_w"], 0)
+        self.assertEqual(channels["device/Device_Cooking/power_fraction"], 0)
+        self.assertEqual(channels["device/Device_Cooking/on_fraction"], 0)
+        baseline = primitives(frame, self.catalogue)
+        frame["devices"][0]["state"] = 0
+        frame["devices"][0]["current_consumption"] = 1800
+        self.assertEqual(primitives(frame, self.catalogue), baseline)
+
+    def test_har_recordings_do_not_expose_internal_electrical_state_or_consumption(self):
+        from har.runtime import capture_frame
+
+        oven = Device("oven", 0, 0, "Oven", 2000, 1, 1500, 2000, current_consumption=1750)
+        frame = capture_frame({}, {"devices": [oven], "sensors": []}, 0, self.catalogue)
+        self.assertNotIn("current_consumption", frame["devices"][0])
+        self.assertNotIn("state", frame["devices"][0])
+        self.assertEqual(oven.state, 1)
+        self.assertEqual(oven.current_consumption, 1750)
+
+    def test_meter_watts_alone_determine_electrical_on_state(self):
+        frame = self.frame()
+        frame["devices"][0]["state"] = 0
+        # Do not use the meter's binary display state or the appliance's state.
+        frame["sensor_states"]["meter-a"]["state"] = [0]
+        for watts, on in ((0.0, 0), (0.001, 1), (500, 1)):
+            with self.subTest(watts=watts):
+                frame["sensor_states"]["meter-a"]["consumption"] = [watts]
+                channels = self.channels(frame)
+                self.assertEqual(channels["device/Device_Cooking/on_fraction"], on)
+                self.assertEqual(channels["device/Device_Cooking/power_observed"], 1)
+
+    def test_missing_meter_sample_does_not_reuse_the_cached_reading(self):
+        frame = self.frame()
+        for data in ({}, {"state": [1]}, {"consumption": None},
+                     {"consumption": []}, {"consumption": [None]}):
+            with self.subTest(data=data):
+                frame["sensor_states"]["meter-a"] = data
+                channels = self.channels(frame)
+                self.assertEqual(channels["sensor/Sensor_Power/available"], 1)
+                self.assertEqual(channels["sensor/Sensor_Power/observed"], 0)
+                self.assertEqual(channels["device/Device_Cooking/power_observed"], 0)
+                self.assertEqual(channels["device/Device_Cooking/on_fraction"], 0)
+                self.assertEqual(channels["device/Device_Cooking/power_w"], 0)
+
+    def test_capture_preserves_meter_failure_and_a_later_valid_zero(self):
+        from har.runtime import capture_frame
+
+        oven = Device("oven", 0, 0, "Oven", 2000, 1, 1500, 2000, current_consumption=1750)
+        meter = Sensor("meter", 0, 0, "Smart Meter", 0, 5000, 1, 1,
+                       consumption=1750, associated_device=oven.name)
+        runtime = {"devices": [oven], "sensors": [meter]}
+        for reading, observed in ((None, 0), ([None], 0), ([], 0), ([0], 1)):
+            with self.subTest(reading=reading):
+                frame = capture_frame({"meter": {"consumption": reading}}, runtime, 0, self.catalogue)
+                self.assertIn("consumption", frame["sensor_states"]["meter"])
+                channels = self.channels(frame)
+                self.assertEqual(channels["device/Device_Cooking/power_observed"], observed)
+                self.assertEqual(channels["device/Device_Cooking/on_fraction"], 0)
+        self.assertEqual((oven.state, oven.current_consumption, meter.consumption), (1, 1750, 1750))
+
+    def test_unmetered_devices_are_unknown_instead_of_counting_as_observed_off(self):
+        frame = self.frame()
+        extra = deepcopy(frame["devices"][0])
+        extra.update(name="unmetered", state=0, current_consumption=0)
+        frame["devices"].append(extra)
+        channels = self.channels(frame)
+        self.assertEqual(channels["device/Device_Cooking/power_observed"], .5)
+        self.assertEqual(channels["device/Device_Cooking/on_fraction"], 1)
+        extra.update(state=1, current_consumption=1800)
+        self.assertEqual(self.channels(frame), channels)
+
+    def test_meter_without_watts_cannot_turn_its_binary_state_into_a_power_reading(self):
+        frame = self.frame()
+        frame["sensors"][0]["consumption"] = None
+        frame["sensor_states"]["meter-a"] = {"state": [1]}
+        channels = self.channels(frame)
+        self.assertEqual(channels["sensor/Sensor_Power/observed"], 0)
+        self.assertEqual(channels["device/Device_Cooking/power_observed"], 0)
+        self.assertEqual(channels["device/Device_Cooking/power_w"], 0)
+
+    def test_unmetered_light_still_consumes_and_a_meter_only_exposes_the_reading(self):
+        from types import SimpleNamespace
+        from har.runtime import capture_frame
+        from utils import update_devices_consumption
+
+        light = Device("lamp", 0, 0, "Normal Light", 7.5, 1, 7.5, 7.5)
+        timer = SimpleNamespace(current_date="2026-11-03", get_simulated_time=lambda: "12:00")
+        update_devices_consumption(None, [light], 1, timer, {})
+        self.assertEqual(light.current_consumption, 7.5)
+        runtime = {"devices": [light], "sensors": []}
+        frame = capture_frame({}, runtime, 0, self.catalogue)
+        self.assertEqual(self.channels(frame)["device/Device_Lighting/power_observed"], 0)
+        meter = Sensor("meter", 0, 0, "Smart Meter", 0, 5000, 1, 0, associated_device=light.name)
+        runtime["sensors"].append(meter)
+        for on, watts in ((1, 7.5), (0, 0.0)):
+            light.state = on
+            update_devices_consumption(None, [light], 1, timer, {})
+            meter.consumption = sensor.compute_smartmeter_consumption(meter, [light], 1, None)
+            channels = self.channels(capture_frame({}, runtime, 1 - on, self.catalogue))
+            self.assertEqual(light.current_consumption, watts)
+            self.assertEqual(channels["device/Device_Lighting/power_observed"], 1)
+            self.assertEqual(channels["device/Device_Lighting/power_w"], watts)
 
     def test_duplicate_whole_device_meters_do_not_double_power(self):
         frame = self.frame()
@@ -93,15 +201,13 @@ class CategoryFeatureTests(unittest.TestCase):
     def test_temporal_features_use_simulated_duration_and_history_is_per_encoder(self):
         encoder = FeatureEncoder(self.catalogue, 120)
         frame = self.frame()
-        frame["sensors"] = []
-        frame["sensor_states"] = {}
-        frame["devices"][0]["state"] = 0
+        frame["sensor_states"]["meter-a"]["consumption"] = [0]
         encoder.update(frame)
         frame["time_seconds"] = 30
-        frame["devices"][0]["state"] = 1
+        frame["sensor_states"]["meter-a"]["consumption"] = [500]
         encoder.update(frame)
         frame["time_seconds"] = 90
-        frame["devices"][0]["state"] = 0
+        frame["sensor_states"]["meter-a"]["consumption"] = [0]
         values = dict(zip(encoder.feature_names, encoder.update(frame)))
         self.assertAlmostEqual(values["device/Device_Cooking/on_fraction/mean"], 2 / 3)
         self.assertEqual(values["device/Device_Cooking/on_fraction/changes"], 2)
@@ -137,11 +243,14 @@ class TransferDeviceTypeTests(unittest.TestCase):
                 self.assertEqual(params["min_consumption"], params["max_consumption"])
                 self.assertEqual(categories_for({"type": kind}, "device", default_catalogue()), [category])
         for kind in ("Bed", "Sofa", "Chair", "Shower", "Sink", "Toilet"):
-            self.assertEqual(device.get_device_params(kind), {"power": 0, "min_consumption": 0, "max_consumption": 0})
+            self.assertNotIn(kind, device.DEVICE_TYPES)
+            self.assertIn(kind, device.FIXTURE_TYPES)
+            self.assertEqual(device.get_device_params(kind), {"power": None, "min_consumption": None, "max_consumption": None})
 
     def test_device_creation_dropdown_contains_the_target_types_and_existing_lights(self):
         dialog = device.DeviceDialog.__new__(device.DeviceDialog)
         with patch.object(device.tk, "Label"), patch.object(device.tk, "Entry"), \
+                patch.object(device.tk, "BooleanVar"), patch.object(device.ttk, "Checkbutton"), \
                 patch.object(device.ttk, "Combobox") as combo, \
                 patch.object(device, "load_catalogue", return_value=default_catalogue()):
             dialog.body(Mock())
@@ -157,6 +266,7 @@ class TransferDeviceTypeTests(unittest.TestCase):
             with self.subTest(error=type(error).__name__):
                 dialog = device.DeviceDialog.__new__(device.DeviceDialog)
                 with patch.object(device.tk, "Label") as label, patch.object(device.tk, "Entry"), \
+                        patch.object(device.tk, "BooleanVar"), patch.object(device.ttk, "Checkbutton"), \
                         patch.object(device.ttk, "Combobox") as combo, \
                         patch.object(device, "load_catalogue", side_effect=error), \
                         patch.object(device, "messagebox") as messagebox:
@@ -217,6 +327,7 @@ class TransferDeviceTypeTests(unittest.TestCase):
         before = deepcopy(dictionary)
         dialog = device.DeviceDialog.__new__(device.DeviceDialog)
         with patch.object(device.tk, "Label"), patch.object(device.tk, "Entry"), \
+                patch.object(device.tk, "BooleanVar"), patch.object(device.ttk, "Checkbutton"), \
                 patch.object(device.ttk, "Combobox", side_effect=lambda _master, **kwargs: self.combo(kwargs["values"], "")), \
                 patch.object(device, "load_catalogue", return_value=dictionary):
             dialog.body(Mock())
@@ -246,6 +357,7 @@ class TransferDeviceTypeTests(unittest.TestCase):
         before = deepcopy(dictionary)
         dialog = device.DeviceDialog.__new__(device.DeviceDialog)
         dialog.device_groups = device.device_types_by_category(dictionary)
+        dialog.object_kind = self.combo(("Electrical device",), "Electrical device")
         dialog.device_category = self.combo(dialog.device_groups, "Device_Entertainment")
         dialog.device_type = self.combo(device.DEVICE_TYPES, "Computer")
         dialog.on_device_type_selected = Mock()

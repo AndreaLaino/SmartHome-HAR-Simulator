@@ -106,3 +106,6 @@ latex/**/*.run.xml
 latex/**/*.synctex.gz
 latex/**/*.toc
 devices/dht_t2.csv
+
+# Output for visual representation
+/outputs/

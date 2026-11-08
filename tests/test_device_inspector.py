@@ -83,6 +83,22 @@ class DeviceInspectorTests(unittest.TestCase):
 
         self.assertEqual(associated_sensor_names(ctx, device), ["meter"])
 
+    def test_hidden_sensor_cannot_steal_a_click_from_a_nearby_visible_marker(self):
+        for hidden_type, visible_type, setting in (("PIR", "Weight", "_pir_visibility"),
+                                                   ("Weight", "PIR", "_sensor_visibility")):
+            with self.subTest(hidden_type=hidden_type):
+                ctx, _, _ = self.make_context()
+                hidden = Sensor("hidden", 10, 20, hidden_type, 0, 1, 1, 0)
+                visible = Sensor("visible", 15, 20, visible_type, 0, 1, 1, 0)
+                ctx.read_sensors = [hidden, visible]
+                ctx.canvas = SimpleNamespace(
+                    _zoom_factor=1, canvasx=lambda x: x, canvasy=lambda y: y,
+                    find_overlapping=lambda *args: (1,), gettags=lambda item: ("sensor",),
+                )
+                setattr(ctx.canvas, setting, "hidden")
+                selection = _selection_at_event(ctx, SimpleNamespace(x=10, y=20))
+                self.assertIs(selection.value, visible)
+
     def test_manual_mode_removes_left_click_selection(self):
         class Canvas:
             def __init__(self):

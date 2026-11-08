@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from tkinter import messagebox
 
 from app.confirmations import ask_confirmation
+from models import is_fixture
 from lighting import LIGHT_CONTROLS, LIGHT_TYPES, SMART_LIGHT, add_light_switch, ensure_light_switches, with_integrated_light_meters
 
 from canvas_zoom import (
@@ -182,7 +183,11 @@ def _selection_at_event(ctx, event):
             value = _nearest_marker(current_devices(ctx), logical_x, logical_y)
             return MapSelection("device", value) if value is not None else None
         if "sensor" in tags:
-            value = _nearest_marker(current_sensors(ctx), logical_x, logical_y)
+            from utils import sensor_visibility
+
+            visible = [sensor for sensor in current_sensors(ctx)
+                       if sensor_visibility(canvas, sensor.type) != "hidden"]
+            value = _nearest_marker(visible, logical_x, logical_y)
             return MapSelection("sensor", value) if value is not None else None
         if "point" in tags:
             value = _nearest_marker(current_points(ctx), logical_x, logical_y)
@@ -204,6 +209,8 @@ def _selection_is_in(selection: MapSelection, selections: list[MapSelection]) ->
 
 
 def _selections_in_rectangle(ctx, x1: float, y1: float, x2: float, y2: float):
+    from utils import sensor_visibility
+
     left, right = sorted((x1, x2))
     top, bottom = sorted((y1, y2))
     selections = []
@@ -218,6 +225,7 @@ def _selections_in_rectangle(ctx, x1: float, y1: float, x2: float, y2: float):
             MapSelection(kind, value)
             for value in source
             if left <= value.x <= right and top <= value.y <= bottom
+            and (kind != "sensor" or sensor_visibility(ctx.canvas, value.type) != "hidden")
         )
     for kind, source in (
         ("wall", current_walls(ctx)),
@@ -386,17 +394,23 @@ def show_device_details(ctx, device) -> None:
         open_light_details(ctx, device)
         return
     sensor_names = associated_sensor_names(ctx, device)
+    passive = is_fixture(device)
+    monitored = any(sensor.type == "Weight" and sensor.associated_device == device.name
+                    for sensor in current_sensors(ctx))
     messagebox.showinfo(
-        f"Device: {device.name}",
+        f"{'Non-electrical object' if passive else 'Device'}: {device.name}",
         "\n".join(
             [
                 f"Name: {device.name}",
                 f"Type: {device.type}",
-                f"State: {'ON' if device.state else 'OFF'}",
+                (f"Occupancy: {('In use' if device.state else 'Free') if monitored else 'Not monitored'}" if passive
+                 else f"State: {'ON' if device.state else 'OFF'}"),
                 f"Position: ({device.x}, {device.y})",
-                f"Power: {device.power} W",
-                f"Consumption range: {device.min_consumption} - {device.max_consumption} W",
-                f"Current consumption: {device.current_consumption} W",
+                *([] if passive else [
+                    f"Power: {device.power} W",
+                    f"Consumption range: {device.min_consumption} - {device.max_consumption} W",
+                    f"Current consumption: {device.current_consumption} W",
+                ]),
                 *(["Smart Meter: integrated"] if device.type == SMART_LIGHT else []),
                 *([f"Light control: {device.light_control.title()}"] if device.type in LIGHT_TYPES else []),
                 f"Associated sensors: {', '.join(sensor_names) if sensor_names else 'None'}",
@@ -662,6 +676,8 @@ def _append_pasted_object(
         value.name = _clipboard_name(current_light_switches(ctx), value.name, preserve_name)
         ensure_light_switches(owner).append(value)
     elif selection.kind == "door":
+        _ensure_reference_point(ctx, value.x1, value.y1)
+        _ensure_reference_point(ctx, value.x2, value.y2)
         current_doors(ctx).append(value)
     elif selection.kind == "wall":
         point_a = _ensure_reference_point(ctx, value.x1, value.y1)
@@ -800,6 +816,61 @@ def record_wall_addition(ctx, wall) -> None:
     _push_undo_action(ctx, {"kind": "wall_added", "wall": wall})
 
 
+def _wall_outside_door(wall, door):
+    """Return the remaining wall pieces, or None if there is no collinear overlap."""
+    from models import Wall
+
+    dx, dy = wall.x2 - wall.x1, wall.y2 - wall.y1
+    length_sq = dx * dx + dy * dy
+    if length_sq == 0:
+        return None
+    ends = [(door.x1, door.y1), (door.x2, door.y2)]
+    if any(abs((x - wall.x1) * dy - (y - wall.y1) * dx) > 1e-6 * math.sqrt(length_sq)
+           for x, y in ends):
+        return None
+    positions = sorted((((x - wall.x1) * dx + (y - wall.y1) * dy) / length_sq, (x, y))
+                       for x, y in ends)
+    start, end = positions[0][0], positions[1][0]
+    if min(1.0, end) - max(0.0, start) <= 1e-9:
+        return None
+    pieces = []
+    if start > 1e-9:
+        pieces.append(Wall(wall.x1, wall.y1, *positions[0][1]))
+    if end < 1.0 - 1e-9:
+        pieces.append(Wall(*positions[1][1], wall.x2, wall.y2))
+    return pieces
+
+
+def record_door_addition(ctx, door) -> None:
+    """Replace the wall under a new door and record the whole edit together."""
+    replaced, added = [], [MapSelection("door", door)]
+    for wall in list(current_walls(ctx)):
+        pieces = _wall_outside_door(wall, door)
+        if pieces is None:
+            continue
+        replaced.append(MapSelection("wall", wall))
+        for piece in pieces:
+            selection = MapSelection("wall", piece)
+            _append_pasted_object(ctx, selection, preserve_name=True)
+            added.append(selection)
+    if replaced:
+        # New pieces already retain the endpoints that must survive removal.
+        removed = _deletion_undo_action(ctx, replaced)
+        _remove_objects(ctx, replaced)
+        action = {"kind": "objects_replaced", "removed": removed, "added": added}
+    else:
+        action = {"kind": "objects_added", "objects": added}
+    _push_undo_action(ctx, action)
+    _redraw_editable_objects(ctx)
+
+
+def record_device_addition(ctx, device, sensor=None) -> None:
+    objects = [MapSelection("device", device)]
+    if sensor is not None:
+        objects.append(MapSelection("sensor", sensor))
+    _push_undo_action(ctx, {"kind": "objects_added", "objects": objects})
+
+
 def _object_source(ctx, kind, value=None):
     if kind == "light_switch":
         owner = switch_owner(ctx, value) if value is not None else None
@@ -808,7 +879,26 @@ def _object_source(ctx, kind, value=None):
             "wall": current_walls, "door": current_doors}[kind](ctx)
 
 
+def _with_orphaned_endpoints(ctx, selections):
+    """Remove only reference points orphaned by the segments being removed."""
+    removed = {id(selection.value) for selection in selections}
+    endpoints = set()
+    for selection in selections:
+        if selection.kind in {"wall", "door"}:
+            segment = selection.value
+            endpoints.update(((segment.x1, segment.y1), (segment.x2, segment.y2)))
+    if not endpoints:
+        return list(selections)
+    retained = {vertex for segment in [*current_walls(ctx), *current_doors(ctx)]
+                if id(segment) not in removed
+                for vertex in ((segment.x1, segment.y1), (segment.x2, segment.y2))}
+    orphaned = endpoints - retained
+    return [*selections, *(MapSelection("point", point) for point in current_points(ctx)
+                           if id(point) not in removed and (point.x, point.y) in orphaned)]
+
+
 def _deletion_undo_action(ctx, selections):
+    selections = _with_orphaned_endpoints(ctx, selections)
     removed_devices = {selection.value.name for selection in selections if selection.kind == "device"}
     links = [(sensor, sensor.associated_device) for sensor in current_sensors(ctx)
              if sensor.associated_device in removed_devices]
@@ -832,7 +922,9 @@ def _deletion_undo_action(ctx, selections):
 
 def _restore_deleted_objects(ctx, action):
     restored = []
-    for selection, index in action["objects"]:
+    # Restore original points first, before walls look up their endpoint names.
+    ordered = sorted(action["objects"], key=lambda item: (item[0].kind != "point", item[1]))
+    for selection, index in ordered:
         source = _object_source(ctx, selection.kind, selection.value)
         if any(value is selection.value for value in source):
             continue
@@ -849,13 +941,14 @@ def _restore_deleted_objects(ctx, action):
         house.active_cycles().update(action["cycles"])
     if hasattr(ctx, "room_overrides"):
         ctx.room_overrides.update(action["room_overrides"])
-    _set_selected_objects(ctx, restored)
+    _set_selected_objects(ctx, [selection for selection, _index in action["objects"]
+                                if _selection_is_in(selection, restored)])
 
 
 def _remove_objects(ctx, selections, *, preserve_runtime=False) -> None:
     # Remove segments before their reference points, including legacy walls
     # represented by point names. Devices own their switches implicitly.
-    ordered = sorted(selections, key=lambda selection: selection.kind == "point")
+    ordered = sorted(_with_orphaned_endpoints(ctx, selections), key=lambda selection: selection.kind == "point")
     house = getattr(ctx, "house_state", None)
     for selection in ordered:
         value = selection.value
@@ -889,6 +982,13 @@ def _apply_history_action(ctx, action):
         # Backward-compatible geometry snapshots created before action records.
         action = {"kind": "geometry", "snapshot": action}
     kind = action.get("kind")
+    if kind == "objects_replaced":
+        # Restore first so shared endpoints remain attached throughout undo/redo.
+        _restore_deleted_objects(ctx, action["removed"])
+        inverse = _deletion_undo_action(ctx, action["added"])
+        _remove_objects(ctx, action["added"])
+        return {"kind": "objects_replaced", "removed": inverse,
+                "added": [selection for selection, _index in action["removed"]["objects"]]}
     if kind == "geometry":
         snapshot = [(value, (value.x, value.y) if len(coordinates) == 2
                      else (value.x1, value.y1, value.x2, value.y2))
@@ -1119,7 +1219,7 @@ def _apply_drag_delta(ctx, state, dx: int, dy: int) -> None:
             if candidate.kind == "point":
                 old_x, old_y = coordinates
                 vertex_mapping[(old_x, old_y)] = (old_x + dx, old_y + dy)
-            elif candidate.kind == "wall":
+            elif candidate.kind in {"wall", "door"}:
                 x1, y1, x2, y2 = coordinates
                 vertex_mapping[(x1, y1)] = (x1 + dx, y1 + dy)
                 vertex_mapping[(x2, y2)] = (x2 + dx, y2 + dy)
@@ -1129,16 +1229,6 @@ def _apply_drag_delta(ctx, state, dx: int, dy: int) -> None:
             coordinates = originals[id(value)]
             if candidate.kind in {"sensor", "device", "light_switch"}:
                 value.x, value.y = coordinates[0] + dx, coordinates[1] + dy
-            elif candidate.kind == "door":
-                x1, y1, x2, y2 = coordinates
-                value.x1, value.y1 = vertex_mapping.get(
-                    (x1, y1),
-                    (x1 + dx, y1 + dy),
-                )
-                value.x2, value.y2 = vertex_mapping.get(
-                    (x2, y2),
-                    (x2 + dx, y2 + dy),
-                )
         return
 
     value = selection.value
@@ -1154,7 +1244,7 @@ def _apply_drag_delta(ctx, state, dx: int, dy: int) -> None:
             _translate_vertices(ctx, {(old_x, old_y): target})
         else:
             value.x, value.y = target
-    elif selection.kind == "wall":
+    elif selection.kind in {"wall", "door"}:
         x1, y1, x2, y2 = original
         if state["endpoint"] == 1:
             target = snap_logical_position(ctx.canvas, x1 + dx, y1 + dy)
@@ -1168,31 +1258,6 @@ def _apply_drag_delta(ctx, state, dx: int, dy: int) -> None:
                 (x2, y2): snap_logical_position(ctx.canvas, x2 + dx, y2 + dy),
             }
         _translate_vertices(ctx, mapping)
-    else:
-        x1, y1, x2, y2 = original
-        if state["endpoint"] == 1:
-            value.x1, value.y1 = snap_logical_position(
-                ctx.canvas,
-                x1 + dx,
-                y1 + dy,
-            )
-        elif state["endpoint"] == 2:
-            value.x2, value.y2 = snap_logical_position(
-                ctx.canvas,
-                x2 + dx,
-                y2 + dy,
-            )
-        else:
-            value.x1, value.y1 = snap_logical_position(
-                ctx.canvas,
-                x1 + dx,
-                y1 + dy,
-            )
-            value.x2, value.y2 = snap_logical_position(
-                ctx.canvas,
-                x2 + dx,
-                y2 + dy,
-            )
 
 
 def finish_selection_drag(ctx, event=None):
@@ -1280,9 +1345,9 @@ def delete_map_selection(
     selections = ([selection]
         + [MapSelection("wall", wall) for wall in connected_walls]
         + [MapSelection("door", door) for door in connected_doors])
-    undo_action = _deletion_undo_action(ctx, selections) if not preserve_runtime else None
-    if preserve_runtime and selection.kind == "wall":
-        _push_undo_action(ctx, {"kind": "wall_removed", "wall": value})
+    undo_action = _deletion_undo_action(ctx, selections) if (
+        not preserve_runtime or selection.kind in {"wall", "door"}
+    ) else None
     _remove_objects(ctx, selections, preserve_runtime=preserve_runtime)
 
     if undo_action is not None:

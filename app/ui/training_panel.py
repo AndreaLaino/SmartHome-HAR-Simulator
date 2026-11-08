@@ -4,8 +4,11 @@ from __future__ import annotations
 import tkinter as tk
 from tkinter import ttk
 
-from app.ui.theme import apply_theme_tree
+from app.ui.theme import apply_theme_tree, get_theme_palette
 from har import runtime, storage
+
+
+ACTIVITY_SELECTED_COLOR = "#24daf2"
 
 
 class TrainingPanel:
@@ -65,6 +68,9 @@ class TrainingPanel:
             indicatoron=False, width=1, padx=8, pady=5,
             command=lambda: self._safe(self._choose_no_activity),
         )
+        self.no_activity_button._theme_exempt = True
+        for widget in (self.activity_canvas, self.activity_grid, scroll, self.no_activity_button):
+            self._bind_activity_scroll(widget)
 
         self.add_row = ttk.Frame(self.frame)
         self.add_row.columnconfigure(0, weight=1)
@@ -128,10 +134,45 @@ class TrainingPanel:
                 width=1, padx=8, pady=5,
                 command=lambda: self._safe(self._choose_activity),
             )
+            self.activity_buttons[name]._theme_exempt = True
+            self._bind_activity_scroll(self.activity_buttons[name])
             added = True
         if added:
             apply_theme_tree(self.activity_grid, "light")
             self._layout_buttons()
+        self._refresh_activity_colors()
+
+    def _bind_activity_scroll(self, widget):
+        for event in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
+            widget.bind(event, self._scroll_activities, add="+")
+
+    def _scroll_activities(self, event):
+        if getattr(event, "num", None) in (4, 5):
+            steps = -1 if event.num == 4 else 1
+        elif event.delta:
+            # macOS trackpads report small deltas; Windows wheels use 120.
+            steps = -event.delta
+            if self.activity_canvas.tk.call("tk", "windowingsystem") != "aqua":
+                steps = int(steps / 120) or (-1 if event.delta > 0 else 1)
+        else:
+            return "break"
+        first, last = self.activity_canvas.yview()
+        if last - first < 1:
+            self.activity_canvas.yview_scroll(steps, "units")
+        return "break"
+
+    def _refresh_activity_colors(self):
+        palette = get_theme_palette("light")
+        toggles = [(self.no_activity, self.no_activity_button)]
+        toggles.extend((self.activity_vars[name], button) for name, button in self.activity_buttons.items())
+        for variable, button in toggles:
+            selected = variable.get()
+            button.configure(
+                background=ACTIVITY_SELECTED_COLOR if selected else palette["entry"],
+                foreground=palette["text"], selectcolor=ACTIVITY_SELECTED_COLOR,
+                activebackground=ACTIVITY_SELECTED_COLOR if selected else palette["surface_hover"],
+                activeforeground=palette["text"], highlightcolor=palette["accent"],
+            )
 
     def _resize(self, event):
         self.activity_canvas.itemconfigure(self._grid_item, width=event.width)
@@ -257,6 +298,7 @@ class TrainingPanel:
         labels = state["labels"] if recording else self.selected_labels()
         description = "unlabelled context" if labels is None else (", ".join(labels) or "no activity")
         self.recording_text.set(f"{'Recording' if recording else 'Not recording'} · Frames: {state['frames']} · True activities: {description}")
+        self._refresh_activity_colors()
 
     def _poll(self):
         self._poll_job = None

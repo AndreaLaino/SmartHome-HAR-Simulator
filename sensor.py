@@ -18,7 +18,7 @@ import numpy as np
 import pandas as pd
 from collections import deque
 from typing import Optional
-from models import Sensor, Device
+from models import Sensor, Device, is_fixture
 from lighting import LIGHT_TYPES
 from house_state import HouseState
 from canvas_zoom import event_to_logical, snap_logical_position
@@ -516,6 +516,44 @@ def get_sensor_params(sensor_type):
         sensor_type,
         {"min": 0.0, "max": 1.0, "step": 1.0, "state": 0.0, "direction": None, "consumption": None},
     )
+
+
+def create_associated_sensor(obj, sensor_type, existing_sensors, rooms=(), *, object_names=()):
+    """Create an ordinary external sensor at a nearby free logical position."""
+    from room_recognition import point_in_polygon
+
+    allowed = ("Weight", "Temperature", "PIR") if is_fixture(obj) else ("Smart Meter", "Weight", "Temperature", "PIR")
+    if sensor_type not in allowed or obj.type == "Smart Light":
+        raise ValueError("This sensor type cannot be added to this object.")
+    room = next((room for room in rooms if point_in_polygon(obj.x, obj.y, room.polygon)), None)
+    position = None
+    max_radius = max(12, len(existing_sensors) + 2)
+    if room is not None:
+        max_radius = 1 + math.ceil(max(max(abs(x - obj.x), abs(y - obj.y)) for x, y in room.polygon) / 25)
+    for radius in range(1, max_radius):
+        offsets = [(dx, dy) for dx in (-radius, radius) for dy in range(-radius, radius + 1)]
+        offsets += [(dx, dy) for dx in range(1 - radius, radius) for dy in (-radius, radius)]
+        for dx, dy in sorted(offsets, key=lambda value: (value[0] ** 2 + value[1] ** 2, -value[0], -value[1])):
+            x, y = obj.x + dx * 25, obj.y + dy * 25
+            if room is not None and not point_in_polygon(x, y, room.polygon):
+                continue
+            if all(math.hypot(x - sensor.x, y - sensor.y) >= 20 for sensor in existing_sensors):
+                position = (x, y)
+                break
+        if position is not None:
+            break
+    if position is None:
+        raise ValueError("No free sensor position near this object in its room. Move nearby sensors or add it separately.")
+    base_name = f"{sensor_type.lower().replace(' ', '_')}_{obj.name}"
+    name, index = base_name, 2
+    names = {sensor.name for sensor in existing_sensors} | set(object_names) | {obj.name}
+    while name in names:
+        name = f"{base_name}_{index}"
+        index += 1
+    params = get_sensor_params(sensor_type)
+    return Sensor(name, *position, sensor_type, params["min"], params["max"], params["step"],
+                  params["state"], direction=params["direction"], consumption=params["consumption"],
+                  associated_device=obj.name)
 
 
 def add_sensor(canvas, event, load_active, on_changed=None, on_finished=None):
@@ -2231,6 +2269,8 @@ def compute_smartmeter_consumption(sensor, devices, delta_seconds, current_datet
         dev_type = None
         dev_state = 0
         if associated_dev:
+            if is_fixture(associated_dev):
+                return 0.0
             if isinstance(associated_dev, Device):
                 dev_name = associated_dev.name
                 dev_type = associated_dev.type
@@ -2298,6 +2338,9 @@ class SensorDialog(simpledialog.Dialog):
             if hasattr(dev, "name") and dev.name:
                 names.add(str(dev.name).strip())
 
+        if getattr(self, "sensor_type", None) is not None and self.sensor_type.get() == "Smart Meter":
+            names.difference_update(obj.name for obj in [*(devices or []), *(devices_file or [])]
+                                    if is_fixture(obj) or obj.type == "Smart Light")
         return sorted(n for n in names if n)
 
     def body(self, master):
@@ -2319,7 +2362,7 @@ class SensorDialog(simpledialog.Dialog):
         self.direction_entry = tk.Entry(master)
         self.direction_entry.insert(0, "0")
 
-        self.associated_device_label = tk.Label(master, text="Associated device:")
+        self.associated_device_label = tk.Label(master, text="Associated object:")
 
         devices_names = self._device_names_for_association()
 
@@ -2329,7 +2372,7 @@ class SensorDialog(simpledialog.Dialog):
         self.on_sensor_type_selected(None)
 
         return self.sensor_name
-    # Show 'direction' for PIR or 'associated device' for Smart Meter only.
+    # Weight links are optional; a Smart Meter needs an electrical device.
     def on_sensor_type_selected(self, event):
         type = self.sensor_type.get()
 
@@ -2340,23 +2383,21 @@ class SensorDialog(simpledialog.Dialog):
             self.associated_device_label.grid_remove()
             self.associated_device_combobox.grid_remove()
 
-        elif type == "Smart Meter":
+        elif type in ("Smart Meter", "Weight"):
             self.direction_label.grid_remove()
             self.direction_entry.grid_remove()
 
             devices_names = self._device_names_for_association()
-            if devices_names:
-                self.associated_device_combobox.configure(values=devices_names, state="readonly")
+            choices = devices_names if type == "Smart Meter" else ["None", *devices_names]
+            if choices:
+                self.associated_device_combobox.configure(values=choices, state="readonly")
             else:
                 self.associated_device_combobox.configure(values=["No devices available"], state="disabled")
 
             self.associated_device_label.grid(row=2, column=0)
             self.associated_device_combobox.grid(row=2, column=1)
 
-            if devices_names:
-                self.associated_device_combobox.current(0)
-            else:
-                self.associated_device_combobox.current(0)
+            self.associated_device_combobox.current(0)
 
         else:
             self.direction_label.grid_remove()
@@ -2412,8 +2453,9 @@ class SensorDialog(simpledialog.Dialog):
             params["direction"] = direction
 
         associated_device = None
-        if type == "Smart Meter":
-            associated_device = self.associated_device_combobox.get()
+        if type in ("Smart Meter", "Weight"):
+            selected = self.associated_device_combobox.get()
+            associated_device = None if selected == "None" else selected
 
         if type == "Temperature":
             # If a CSV series exists, use its first value as the initial state.

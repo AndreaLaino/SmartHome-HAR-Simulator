@@ -36,6 +36,7 @@ from app.ui.device_inspector import (
     begin_point_segment_mode,
     install_device_inspector,
     record_wall_addition,
+    record_door_addition,
     delete_selected_object,
     undo_last_movement,
     redo_last_movement,
@@ -59,6 +60,7 @@ from utils import (
     set_pir_fov_sources,
     set_pir_fov_transparency,
     set_pir_fov_visibility,
+    set_sensor_visibility,
 )
 
 
@@ -108,12 +110,14 @@ def _menu_add_point(ctx: AppContext):
 
 def _menu_add_device(ctx: AppContext):
     from app.ui.rooms import refresh_rooms
+    from app.ui.device_inspector import record_device_addition
 
     def device_changed():
         rooms = refresh_rooms(ctx, draw=True)
         runtime_sources = getattr(ctx, "_manual_runtime_sources", None)
         if isinstance(runtime_sources, dict):
             runtime_sources["rooms"] = rooms
+        _refresh_pir_overlay(ctx)
 
     begin_placement_mode(
         ctx,
@@ -123,6 +127,8 @@ def _menu_add_device(ctx: AppContext):
             event,
             ctx.load_active,
             on_changed=device_changed,
+            rooms=getattr(ctx, "rooms", ()),
+            on_created=lambda obj, sensor: record_device_addition(ctx, obj, sensor),
         ),
     )
 
@@ -180,25 +186,16 @@ def _menu_add_wall(ctx: AppContext):
 
 
 def _menu_add_door(ctx: AppContext):
-    from app.ui.rooms import refresh_rooms
-
-    def geometry_changed():
-        rooms = refresh_rooms(ctx, draw=True)
-        runtime_sources = getattr(ctx, "_manual_runtime_sources", None)
-        if isinstance(runtime_sources, dict):
-            runtime_sources["rooms"] = rooms
-        _refresh_pir_overlay(ctx)
+    def create_door(point1, point2):
+        door = add_door_between_points(ctx.canvas, point1, point2, ctx.load_active)
+        if door is not None:
+            record_door_addition(ctx, door)
+        return door
 
     begin_point_segment_mode(
         ctx,
         "Add doors",
-        lambda point1, point2: add_door_between_points(
-            ctx.canvas,
-            point1,
-            point2,
-            ctx.load_active,
-            on_changed=geometry_changed,
-        ),
+        create_door,
         continuous=True,
     )
 
@@ -277,7 +274,7 @@ def build_home_ui(ctx: AppContext):
     tool_palette.add_tool(
         "device",
         "device",
-        "Add device\nChoose this tool, then left-click its position.",
+        "Add device / non-electrical object\nChoose this tool, then left-click its position.",
         lambda: _menu_add_device(ctx),
     )
     tool_palette.add_tool(
@@ -336,6 +333,8 @@ def build_home_ui(ctx: AppContext):
     canvas._show_room_types = bool(
         ctx.preferences.get("show_room_types", True)
     )
+    canvas._sensor_visibility = ctx.preferences.get("sensor_visibility", "full")
+    canvas._pir_visibility = ctx.preferences.get("pir_visibility", "full")
     set_theme_role(canvas, "canvas")
 
     def apply_zoom(action, event=None):
@@ -470,7 +469,8 @@ def build_home_ui(ctx: AppContext):
     file_menu = Menu(menu_bar, tearoff=0)
     ctx.file_menu = file_menu
     menu_bar.add_cascade(label="File", menu=file_menu)
-    file_menu.add_command(label="New", command=lambda: delete_scenario(ctx, ctx.canvas))
+    # Like Save below, let the macOS menu dismiss before opening a modal dialog.
+    file_menu.add_command(label="New", command=lambda: ctx.window.after_idle(lambda: delete_scenario(ctx, ctx.canvas)))
     file_menu.add_command(label="Open file", command=lambda: open_scenario(ctx, ctx.canvas))
     file_menu.add_command(label="Load default (saved.csv)", command=lambda: load_scenario_from_file(ctx, ctx.canvas))
     file_menu.add_separator()
@@ -663,6 +663,30 @@ def build_home_ui(ctx: AppContext):
         command=toggle_room_types,
     )
 
+    sensor_visibility_menus = []
+    for label, preference_key, pir in (
+        ("Sensors", "sensor_visibility", False),
+        ("PIR sensors", "pir_visibility", True),
+    ):
+        visibility_menu = Menu(settings_menu, tearoff=0)
+        sensor_visibility_menus.append(visibility_menu)
+        settings_menu.add_cascade(label=label, menu=visibility_menu)
+        variable = tk.StringVar(value=ctx.preferences.get(preference_key, "full"))
+
+        def change_visibility(key=preference_key, is_pir=pir, selected=variable):
+            mode = selected.get()
+            set_sensor_visibility(ctx.canvas, mode, pir=is_pir)
+            from app.ui.device_inspector import clear_selection
+            clear_selection(ctx)
+            save_setting(key, mode)
+
+        for text, mode in (("With names", "full"), ("Markers only", "markers"), ("Hidden", "hidden")):
+            visibility_menu.add_radiobutton(
+                label=text, variable=variable, value=mode, command=change_visibility,
+            )
+        # Tk menus refer to variable names; retain the Python variables as well.
+        visibility_menu._visibility_variable = variable
+
     confirmations_menu = Menu(settings_menu, tearoff=0)
     settings_menu.add_cascade(
         label="Confirmations",
@@ -806,6 +830,7 @@ def build_home_ui(ctx: AppContext):
         file_menu,
         scenario_menu,
         settings_menu,
+        *sensor_visibility_menus,
         start_time_menu,
         starting_home_menu,
         confirmations_menu,

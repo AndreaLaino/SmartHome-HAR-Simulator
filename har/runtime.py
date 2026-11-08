@@ -13,6 +13,7 @@ from uuid import uuid4
 from har import storage
 from har.catalogue import categories_for, load_catalogue, validate_catalogue_compatibility
 from har.features import FeatureEncoder, number
+from models import is_fixture
 
 
 def current_runtime(ctx):
@@ -27,12 +28,17 @@ def capture_frame(sensor_states, runtime, time_seconds, catalogue):
     sensors = with_integrated_light_meters(runtime.get("sensors", []), devices)
     frame = {"time_seconds": float(time_seconds), "devices": [], "sensors": [], "rooms": [], "sensor_states": {}}
     for kind, objects in (("device", devices), ("sensor", sensors)):
-        fields = (("name", "type", "x", "y", "state", "power", "min_consumption", "max_consumption", "current_consumption")
+        fields = (("name", "type", "x", "y", "power", "min_consumption", "max_consumption")
                   if kind == "device" else
                   ("name", "type", "x", "y", "min_val", "max_val", "state", "consumption", "associated_device", "integrated"))
         for obj in objects:
-            item = {name: getattr(obj, name, None) for name in fields}
-            for name in set(fields) - {"name", "type", "associated_device", "integrated"}:
+            object_fields = fields
+            if kind == "device" and is_fixture(obj):
+                object_fields = ("name", "type", "x", "y", "state")
+            item = {name: getattr(obj, name, None) for name in object_fields}
+            if kind == "device" and is_fixture(obj):
+                item["object_kind"] = "fixture"
+            for name in set(object_fields) - {"name", "type", "associated_device", "integrated"}:
                 if item[name] is not None:
                     value = number(item[name], None)
                     if value is None:
@@ -45,6 +51,8 @@ def capture_frame(sensor_states, runtime, time_seconds, catalogue):
     for name, values in sensor_states.items():
         observed = {}
         for key in ("state", "consumption"):
+            if key not in values:
+                continue
             value = values.get(key)
             if isinstance(value, (list, tuple)):
                 value = value[-1] if value else None
@@ -53,6 +61,9 @@ def capture_frame(sensor_states, runtime, time_seconds, catalogue):
                 if value is None:
                     raise ValueError(f"Invalid numeric reading from {name}.")
                 observed[key] = [value]
+            else:
+                # Preserve failure/missing-sample information across save/replay.
+                observed[key] = []
         frame["sensor_states"][name] = observed
     return frame
 

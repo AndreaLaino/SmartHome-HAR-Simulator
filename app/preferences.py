@@ -33,12 +33,16 @@ DEFAULT_PREFERENCES = {
     "snap_to_grid": True,
     "show_grid": True,
     "show_room_types": True,
+    "sensor_visibility": "full",
+    "pir_visibility": "full",
     **{key: True for key in CONFIRMATION_PREFERENCES},
 }
 PREFERENCE_CHOICES = {
     "start_time": {"midnight", "computer"},
     "starting_home": {"empty", "default", "custom"},
     "window_state": {"normal", "maximized", "fullscreen"},
+    "sensor_visibility": {"full", "markers", "hidden"},
+    "pir_visibility": {"full", "markers", "hidden"},
 }
 
 

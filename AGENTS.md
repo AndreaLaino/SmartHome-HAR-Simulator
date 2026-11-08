@@ -50,7 +50,7 @@ reorganizing it as part of an unrelated task.
 | Startup and shared state | `main.py` starts Tk and restores preferences; `app/context.py` holds application context; `house_state.py` holds house and simulation state. |
 | Main interface | `app/ui/main_ui.py`, `app/ui/tool_palette.py`, `app/ui/theme.py`: menus, canvas, tools, and appearance. |
 | Editing and history | `app/ui/device_inspector.py`: selection, dragging, resizing, placement, clipboard, deletion, undo/redo, and object actions. |
-| Object models and drawing | `models.py`, `point.py`, `wall.py`, `door.py`, `device.py`: data models and map-object creation/rendering. |
+| Object models and drawing | `models.py`, `point.py`, `wall.py`, `door.py`, `device.py`: data models and map-object creation/rendering, including non-electrical `Fixture` objects without power fields. |
 | Coordinates and visibility | `canvas_zoom.py`, `label_layout.py`, `utils.py`: logical/canvas coordinates, zoom, pan, snapping, labels, and shared geometry/PIR visibility. |
 | Manual simulation and clock | `app/controllers/simulation.py`, `sim.py`, `timer.py`: session lifecycle, avatar/device/door interaction, sampling, pause, reset, and time advance. |
 | Replay and analysis | `automatic.py`: loading recorded time series and interaction logs, replay analysis, graphs, and exports. |

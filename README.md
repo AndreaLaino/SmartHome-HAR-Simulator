@@ -70,6 +70,16 @@ houses through category-based measurements; there is no manual device-to-activit
 transfer rule. A category alone never starts an activity, and learned recognition
 requires an activated trained model.
 
+HAR reads electrical power only from Smart Meter observations, including the
+built-in meters of smart lights. An unmetered appliance still runs and consumes
+power internally, but its internal consumption is not a HAR input or a field in
+new HAR recordings. HAR also derives electrical ON/OFF only from that measured
+power: more than 0 W is ON and 0 W is OFF. Without a valid reading, both power
+and state are unobserved, not a measured OFF; an explicitly missing sample cannot
+reuse a cached wattage. Internal electrical state is excluded from new HAR
+recordings and ignored in older ones. Retrain earlier models for experiments
+that relied on internal power or ON/OFF; saved meter recordings can be reused.
+
 For quick recording, click the **graduation hat** in the left toolbar. A panel
 below the map offers activity buttons, **No activity (idle)**, **Add activity**,
 and **Record / Stop & save**. Select the true activities (multiple selections
@@ -147,11 +157,41 @@ shared room boundaries. Devices without a Smart Meter are excluded, and rooms
 without meters are marked **No smart meters**. **Scenario > Recognize rooms**
 shows the same live totals in the room list.
 
+**Settings > Sensors** controls other sensors, while **Settings > PIR sensors**
+controls PIR markers separately. Each offers **With names**, **Markers only**,
+and **Hidden**, remembered between launches. Hidden PIRs also hide their fields
+of view; showing them again restores the separate **Show PIR fields of view**
+choice. These are display options: sensor measurements, recordings, room power,
+and activity recognition continue while markers are hidden.
+
+Drawing a new door along an existing wall replaces only the overlapping span
+with the door, retaining the wall pieces on either side. The opening affects
+both the map and PIR visibility. Undo/Redo restores the whole insertion in one
+step, including the previous wall and its reference points.
+
 To add a device, choose **Scenario > Add devices** and click its map position.
-In the dialog, choose a **Category** to filter **Device type**: for example,
-**Device_Cooking** offers Oven, Microwave, and Toaster. **All devices** shows the
-full list. Devices with multiple shared categories appear in each relevant
+In the dialog, choose **Object kind**: **Electrical device** or
+**Non-electrical object**. The latter contains Bed, Sofa, Chair, Shower, Sink,
+and Toilet, with no wattage fields or electrical consumption cycles.
+Choose a **Category** to filter **Type**: for example,
+**Device_Cooking** offers Oven, Microwave, and Toaster. **All devices** shows
+the electrical list; **All objects** shows the non-electrical list. Objects
+with multiple shared categories appear in each relevant
 group; selecting a group preserves all of the device's categories.
+
+Check **Add associated sensor** to create an ordinary external sensor beside the
+object automatically. Electrical devices default to Smart Meter; non-electrical
+objects default to Weight. The sensor has its own marker and can be moved or
+deleted independently. Placement avoids nearby sensors and stays in the object's
+room when a room is available. Smart lights retain their built-in meter.
+For a linked Weight sensor, clicking near the object in Manual mode activates
+its simulated load; moving away releases it, even if the sensor marker was moved.
+This is a binary load observation, not a weight in kilograms or an activity label.
+**Add sensors** also allows an optional object link for Weight sensors.
+Undo/Redo treats creation of an object and its optional sensor as one edit.
+Older scenarios containing these six passive types in Devices are converted on
+load; new saves use a separate Fixtures section without power columns. HAR keeps
+their existing capability categories and records no electrical measurement for them.
 
 Microwave, Toaster, TV, and PlayStation have illustrative nominal-load profiles
 in `consumption_profiles.py`. The toaster switches off after its three-minute
@@ -197,6 +237,10 @@ once—from **Settings > Confirmations**.
 The canvas uses mode-specific mouse controls. Middle-button drag always pans the
 home. In Select mode, left-click selects a point, sensor, device, wall, or door;
 dragging moves it, while dragging a wall or door endpoint resizes that segment.
+Walls and doors retain their reference points when moved or resized; other
+segments attached to a shared point follow it. Deleting a wall or door also
+removes its endpoints when no remaining segment uses them. Unrelated standalone
+points are kept, and Undo restores the original points and connections.
 Right-click opens its action menu, while right-dragging draws a marquee that
 selects multiple objects; left-dragging one of them moves the entire selection.
 Copy, Cut, Paste, and Duplicate are available

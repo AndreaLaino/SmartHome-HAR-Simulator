@@ -5,7 +5,7 @@ from canvas_zoom import to_canvas, to_canvas_length
 import csv
 import io
 import json
-from models import Point, Sensor, Device, Door, Wall, LightSwitch
+from models import Point, Sensor, Device, Fixture, FIXTURE_TYPES, Door, Wall, LightSwitch
 from lighting import LIGHT_CONTROLS, LIGHT_TYPES
 
 # Global lists to save data read from file
@@ -61,6 +61,9 @@ def read_coordinates_from_file(file_path):
                 continue
             elif section_name == "devices":
                 current_section = "Devices"
+                continue
+            elif section_name == "fixtures":
+                current_section = "Fixtures"
                 continue
             elif section_name == "doors":
                 current_section = "Doors"
@@ -142,6 +145,9 @@ def read_coordinates_from_file(file_path):
                         continue
                     (name_d, x_d, y_d, type_d, power, state_d, min_consumption,
                      max_consumption, current_consumption, consumption_direction) = row[:10]
+                    if type_d in FIXTURE_TYPES:
+                        read_devices.append(Fixture(name_d, int(x_d), int(y_d), type_d))
+                        continue
                     light_control = row[10].strip().lower() if len(row) > 10 else "manual"
                     if len(row) > 11 or light_control not in LIGHT_CONTROLS:
                         raise ValueError("Invalid light control mode")
@@ -176,6 +182,13 @@ def read_coordinates_from_file(file_path):
                     )
                 except ValueError:
                     print(f"Error Devices row: {row}")
+
+            elif current_section == "Fixtures":
+                try:
+                    name, x, y, object_type = row
+                    read_devices.append(Fixture(name, int(x), int(y), object_type))
+                except ValueError:
+                    print(f"Error Fixtures row: {row}")
 
             elif current_section == "Doors":
                 try:

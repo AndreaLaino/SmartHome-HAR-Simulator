@@ -169,6 +169,8 @@ class LightingTests(unittest.TestCase):
         dialog.device_type = Mock(get=lambda: "Lighting")
         dialog.lighting_power = Mock()
         dialog.lighting_control = Mock(get=lambda: "Manual")
+        dialog.object_kind = Mock(get=lambda: "Electrical device")
+        dialog.add_sensor = Mock(get=lambda: False)
         with patch.object(device, "devices", []), patch.object(device, "device_file", []), \
                 patch.object(device.messagebox, "showwarning"):
             for value in ("", "bad", "0", "-1", "nan", "inf"):
@@ -178,7 +180,7 @@ class LightingTests(unittest.TestCase):
             dialog.lighting_power.get.return_value = "7.5"
             self.assertTrue(dialog.validate())
             dialog.apply()
-            self.assertEqual(dialog.result, ("new lamp", "Lighting", 7.5, 7.5, 7.5, "manual"))
+            self.assertEqual(dialog.result, ("new lamp", "Lighting", 7.5, 7.5, 7.5, "manual", None))
 
 
 if __name__ == "__main__":

@@ -20,7 +20,7 @@ from app.logging_setup import setup_logging
 from app.confirmations import ask_confirmation
 from app.save_paths import ensure_houses_dir, ensure_saves_dir, ensure_devices_dir
 from app.ui.theme import apply_theme_tree, get_widget_theme_mode
-from models import Point, Sensor, Device, Door, Wall
+from models import Point, Sensor, Device, Door, Wall, is_fixture
 from lighting import LIGHT_TYPES, ensure_light_switches
 from har.storage import new_house_config, validate_house_config
 
@@ -441,6 +441,8 @@ def _serialize_scenario(ctx: AppContext) -> str:
         csvwriter.writerow(["Devices"])
         srcd = devices if not ctx.load_active else ctx.read_devices
         for d in srcd:
+            if is_fixture(d):
+                continue
             (name, x, y, typ, power, state, min_c, max_c, curr_c, c_dir) = _device_to_tuple(d)
             state = 0
             curr_c = 0.0
@@ -451,6 +453,12 @@ def _serialize_scenario(ctx: AppContext) -> str:
                 c_dir if c_dir is not None else "None",
                 *([d.light_control] if typ in LIGHT_TYPES else []),
             ])
+
+        csvwriter.writerow([])
+        csvwriter.writerow(["Fixtures"])
+        for obj in srcd:
+            if is_fixture(obj):
+                csvwriter.writerow([obj.name, int(obj.x), int(obj.y), obj.type])
 
         csvwriter.writerow([])
         csvwriter.writerow(["Light Switches"])

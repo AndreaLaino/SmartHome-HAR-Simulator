@@ -10,6 +10,7 @@ import math
 from collections import defaultdict
 
 from har.catalogue import categories_for, category_name
+from models import is_fixture
 
 
 ROOMS = ("unknown", "kitchen", "livingroom", "bedroom", "bathroom", "office", "hallway", "diningroom", "laundry", "other")
@@ -85,11 +86,11 @@ def primitives(frame, catalogue):
             definition = catalogue["sensor_categories"][category]
             measurement = definition["measurement"]
             # Power in watts is authoritative, including an explicit zero.
-            value = latest(data, "consumption") if measurement == "power" else None
-            if value is None:
-                value = latest(data, "state")
-            if value is None:
-                value = number(sensor.get("consumption"), None) if measurement == "power" else number(sensor.get("state"), None)
+            reading = "consumption" if measurement == "power" else "state"
+            value = latest(data, reading)
+            # An explicit missing meter sample overrides any cached sensor value.
+            if value is None and (measurement != "power" or sensor["name"] not in observations):
+                value = number(sensor.get(reading), None)
             key = f"sensor/{category}"
             pools[f"{key}/available"].append(1.0)
             pools[f"{key}/observed"].append(float(value is not None))
@@ -105,17 +106,23 @@ def primitives(frame, catalogue):
                 device_power[sensor["associated_device"]].append(max(0.0, value))
     for device in frame.get("devices", []):
         meter_values = device_power.get(device["name"])
-        stored_power = number(device.get("current_consumption"), None)
         # Multiple whole-appliance meters observe the same load. Keep the
         # largest reading, independent of sensor names, rather than doubling it.
-        power = max(meter_values) if meter_values is not None else stored_power
+        power = max(meter_values) if meter_values is not None else None
+        passive = is_fixture(device)
+        if passive:
+            power = None
+        # Electrical state is measured load, never the simulator's actuator state.
+        # Passive-object occupancy continues to follow its associated load sensor.
+        state = (number(device.get("state")) > 0) if passive else (power > 0 if power is not None else None)
         rated = max(number(device.get("power")), number(device.get("max_consumption")))
         for category in _known_categories(device, "device", catalogue):
             if category not in catalogue["device_categories"]:
                 continue
             key = f"device/{category}"
             pools[f"{key}/available"].append(1.0)
-            pools[f"{key}/on_fraction"].append(float(number(device.get("state")) > 0))
+            if state is not None:
+                pools[f"{key}/on_fraction"].append(float(state))
             pools[f"{key}/power_observed"].append(float(power is not None))
             if power is not None:
                 pools[f"{key}/power_w"].append(max(0.0, power))

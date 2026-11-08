@@ -4,6 +4,27 @@ from typing import Optional, List
 from dataclasses import dataclass, field
 
 
+FIXTURE_TYPES = ("Bed", "Sofa", "Chair", "Shower", "Sink", "Toilet")
+
+
+def is_fixture(obj) -> bool:
+    """Also recognize passive objects saved by older versions as devices."""
+    if isinstance(obj, dict):
+        return obj.get("object_kind") == "fixture" or obj.get("type") in FIXTURE_TYPES
+    return isinstance(obj, Fixture) or getattr(obj, "type", None) in FIXTURE_TYPES
+
+
+@dataclass
+class Fixture:
+    """Furniture or sanitary fixture, with no electrical measurements."""
+    name: str
+    x: int
+    y: int
+    type: str
+    state: int = 0  # Occupied/in use according to an associated load sensor.
+    categories: Optional[List[str]] = None
+
+
 @dataclass
 class Point:
     """Represents a reference point on the map."""
