@@ -165,8 +165,8 @@ shows the same live totals in the room list.
 
 **Settings > Sensors** controls other sensors, while **Settings > PIR sensors**
 controls PIR markers separately. Each offers **With names**, **Markers only**,
-and **Hidden**, remembered between launches. Hidden PIRs also hide their fields
-of view; showing them again restores the separate **Show PIR fields of view**
+and **Hidden**, remembered between launches. PIR markers and names are independent
+of their fields of view, controlled by the separate **Show PIR fields of view**
 choice. These are display options: sensor measurements, recordings, room power,
 and activity recognition continue while markers are hidden.
 

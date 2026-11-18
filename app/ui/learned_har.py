@@ -535,8 +535,8 @@ class LearnedHARWindow:
                          "Repeating this button replaces the same demo sessions; it does not change your recorded houses.")
         self.status.set(f"Added {len(sessions)} synthetic demo sessions. The current house and active model are unchanged.")
 
-    def refresh_data(self):
-        self.sessions = self.storage.list_sessions()
+    def refresh_data(self, *, sessions=None, models=None):
+        self.sessions = self.storage.list_sessions() if sessions is None else sessions
         self.source_houses.clear()
         for session in self.sessions:
             house_id, label = _session_house(session)
@@ -547,7 +547,8 @@ class LearnedHARWindow:
         if self.source.get() not in self.source_houses:
             self.source.set(choices[0] if choices else "")
         selected_id = self.model_choices.get(self.model.get())
-        self.model_names = model_display_names(self.storage.list_models(), self.sessions)
+        models = self.storage.list_models() if models is None else models
+        self.model_names = model_display_names(models, self.sessions)
         self.model_choices = {name: identifier for identifier, name in self.model_names.items()}
         self.model_combo.configure(values=list(self.model_choices))
         preferred_id = selected_id if selected_id in self.model_names else _config(self.ctx).get("model_id")
@@ -588,7 +589,6 @@ class LearnedHARWindow:
         threading.Thread(target=work, name="learned-har-experiment", daemon=True).start()
 
     def train(self):
-        from har.learning import train_source, evaluate_model
         source_id = self.source_houses.get(self.source.get())
         if not source_id:
             raise ValueError("Record and save source sessions first.")
@@ -598,10 +598,11 @@ class LearnedHARWindow:
             raise ValueError("Temporal context must be a positive number of seconds.") from None
         if not 0 < seconds <= 86400:
             raise ValueError("Temporal context must be between 0 and 86400 seconds.")
-        sessions = self.storage.list_sessions()
         storage = self.storage
 
         def job():
+            from har.learning import train_source, evaluate_model
+            sessions = storage.list_sessions()
             model = train_source(sessions, source_id, window_seconds=seconds, seed=42)
             model["source_house_label"] = _source_house_names(sessions)[source_id]
             model["display_name"] = model_display_names([*storage.list_models(), model], sessions)[model["model_id"]]
@@ -609,11 +610,11 @@ class LearnedHARWindow:
             report = evaluate_model(model, sessions)
             path = storage.DATA_DIR / "reports" / f"{model['model_id']}_evaluation.json"
             storage.atomic_json(path, report)
-            return model, report, path
+            return model, report, path, sessions, storage.list_models()
 
         def success(result):
-            model, report, path = result
-            self.refresh_data()
+            model, report, path, sessions, models = result
+            self.refresh_data(sessions=sessions, models=models)
             for choice, model_id in self.model_choices.items():
                 if model_id == model["model_id"]:
                     self.model.set(choice)
@@ -626,14 +627,14 @@ class LearnedHARWindow:
         self._run_worker(job, success)
 
     def evaluate_selected(self):
-        from har.learning import evaluate_model
         model_id = self.model_choices.get(self.model.get())
         if not model_id:
             raise ValueError("Select a saved model first.")
-        sessions = self.storage.list_sessions()
         storage = self.storage
 
         def job():
+            from har.learning import evaluate_model
+            sessions = storage.list_sessions()
             model = storage.load_model(model_id)
             report = evaluate_model(model, sessions)
             path = storage.DATA_DIR / "reports" / f"{model_id}_evaluation.json"

@@ -96,6 +96,10 @@ class GeometryTests(unittest.TestCase):
             self.images.append((position, options))
             return len(self.images)
 
+        def itemconfig(self, item, **options):
+            position, previous = self.images[item - 1]
+            self.images[item - 1] = (position, {**previous, **options})
+
         def tag_raise(self, *args):
             self.raise_calls.append(args)
 
@@ -152,19 +156,19 @@ class GeometryTests(unittest.TestCase):
         self.assertGreater(self.fov_pixel(opened, 20, 0)[3], 0)
 
     def test_pir_transparency_is_continuous_and_fully_clears_fill_and_outline(self):
-        canvas = self.render_fov(make_sensor("pir", "PIR", 0, 0, direction=0), transparency=0)
-        photo = canvas.images[0][1]["image"]
-        alphas = []
-        for transparency in range(101):
-            set_pir_fov_transparency(canvas, transparency)
-            alphas.append(self.fov_pixel(canvas, 100, 0)[3])
-        self.assertEqual((alphas[0], alphas[50], alphas[75], alphas[100]), (255, 128, 64, 0))
-        self.assertTrue(all(before > after for before, after in zip(alphas, alphas[1:])))
-        self.assertEqual(photo.image.getchannel("A").getextrema(), (0, 0))
-        set_pir_fov_transparency(canvas, 0)
-        self.assertEqual(self.fov_pixel(canvas, 100, 0), (255, 231, 163, 255))
-        self.assertEqual(self.fov_pixel(canvas, 100, 100)[3], 0)
-        self.assertEqual(len(canvas.images), 1)  # Slider changes reuse the same image and geometry.
+        with patch("utils.ImageTk.PhotoImage", side_effect=self.Photo):
+            canvas = self.render_fov(make_sensor("pir", "PIR", 0, 0, direction=0), transparency=0)
+            alphas = []
+            for transparency in range(101):
+                set_pir_fov_transparency(canvas, transparency)
+                alphas.append(self.fov_pixel(canvas, 100, 0)[3])
+            self.assertEqual((alphas[0], alphas[50], alphas[75], alphas[100]), (255, 128, 64, 0))
+            self.assertTrue(all(before > after for before, after in zip(alphas, alphas[1:])))
+            self.assertEqual(canvas.images[0][1]["image"].image.getchannel("A").getextrema(), (0, 0))
+            set_pir_fov_transparency(canvas, 0)
+            self.assertEqual(self.fov_pixel(canvas, 100, 0), (255, 231, 163, 255))
+            self.assertEqual(self.fov_pixel(canvas, 100, 100)[3], 0)
+            self.assertEqual(len(canvas.images), 1)  # Reuse the canvas item and clipped geometry.
 
     def test_pir_fov_transparency_keeps_exact_slider_value(self):
         canvas = self.FOVCanvas()

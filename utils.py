@@ -178,7 +178,7 @@ def refresh_pir_fov(canvas) -> None:
     """Redraw PIR overlays after sensors, walls, or doors change."""
     canvas.delete(PIR_FOV_TAG)
     canvas._pir_fov_images = {}
-    if getattr(canvas, "_show_pir_fov", False) and sensor_visibility(canvas, "PIR") != "hidden":
+    if getattr(canvas, "_show_pir_fov", False):
         sensors = getattr(canvas, "_pir_fov_sensors", ())
         walls = getattr(canvas, "_pir_fov_walls", ())
         doors = getattr(canvas, "_pir_fov_doors", ())
@@ -195,8 +195,13 @@ def set_pir_fov_transparency(canvas, transparency: int) -> int:
         requested = 50
     selected = max(0, min(100, requested))
     canvas._pir_fov_transparency = selected
-    for image, photo in getattr(canvas, "_pir_fov_images", {}).values():
-        photo.paste(_pir_fov_with_transparency(image, selected))
+    images = getattr(canvas, "_pir_fov_images", {})
+    for item, (image, _previous_photo) in images.items():
+        # Replace the displayed Tk image so native renderers invalidate their
+        # cached alpha, including transitions to and from complete transparency.
+        photo = ImageTk.PhotoImage(_pir_fov_with_transparency(image, selected), master=canvas)
+        canvas.itemconfig(item, image=photo)
+        images[item] = (image, photo)
     # Alpha zero is fully invisible while preserving bounds for stable zoom/scroll.
     return selected
 

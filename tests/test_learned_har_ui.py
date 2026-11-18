@@ -3,6 +3,7 @@ from copy import deepcopy
 import os
 from pathlib import Path
 import tempfile
+import threading
 import time
 import tkinter as tk
 import unittest
@@ -211,6 +212,41 @@ class LearnedHARWindowTests(unittest.TestCase):
         self.ui.deactivate_model()
         self.assertIsNone(self.ctx.har_config["model_id"])
 
+    def test_session_loading_keeps_tk_responsive_and_reports_read_errors(self):
+        self.ui.source_houses = {"Source": "source_house"}
+        self.ui.source.set("Source")
+        main_thread = threading.get_ident()
+        loading, release, heartbeat = threading.Event(), threading.Event(), threading.Event()
+
+        def slow_read():
+            self.assertNotEqual(threading.get_ident(), main_thread)
+            loading.set()
+            if not release.wait(5):
+                raise AssertionError("The UI did not release the test reader")
+            raise OSError("Recording read failed in test")
+
+        with patch.object(storage, "list_sessions", side_effect=slow_read):
+            try:
+                self.ui.train()
+                deadline = time.monotonic() + 3
+                while not loading.is_set() and time.monotonic() < deadline:
+                    self.pump()
+                    time.sleep(.01)
+                self.assertTrue(loading.is_set())
+                self.assertTrue(self.ui._busy)
+                self.ui.window.after(0, heartbeat.set)
+                self.pump()
+                self.assertTrue(heartbeat.is_set())
+            finally:
+                release.set()
+            deadline = time.monotonic() + 3
+            while self.ui._busy and time.monotonic() < deadline:
+                self.pump()
+                time.sleep(.01)
+        self.assertFalse(self.ui._busy)
+        self.assertIn("Recording read failed in test", self.ui.status.get())
+        self.assertEqual(str(self.ui.train_button.cget("state")), "normal")
+
     def test_readable_legacy_model_choices_preserve_selection_ids_and_saved_files(self):
         dictionary = catalogue.load_catalogue()
         session_path = storage.save_session({
@@ -300,11 +336,20 @@ class LearnedHARWindowTests(unittest.TestCase):
                 "partition": "source" if source else "target", "catalogue": dictionary, "frames": frames,
             })
         self.ui.refresh_data()
-        self.ui.train()
-        deadline = time.monotonic() + 30
-        while self.ui._busy and time.monotonic() < deadline:
-            self.pump()
-            time.sleep(.02)
+        main_thread = threading.get_ident()
+        read_sessions, read_models = storage.list_sessions, storage.list_models
+
+        def background_read(reader):
+            self.assertNotEqual(threading.get_ident(), main_thread, "Experiment file I/O ran on the Tk thread")
+            return reader()
+
+        with patch.object(storage, "list_sessions", side_effect=lambda: background_read(read_sessions)), \
+                patch.object(storage, "list_models", side_effect=lambda: background_read(read_models)):
+            self.ui.train()
+            deadline = time.monotonic() + 30
+            while self.ui._busy and time.monotonic() < deadline:
+                self.pump()
+                time.sleep(.02)
         self.assertFalse(self.ui._busy)
         self.assertIn("Training completed", self.ui.status.get())
         self.assertIn("Labelled test observations: 12", self.ui.report_text.get("1.0", tk.END))
