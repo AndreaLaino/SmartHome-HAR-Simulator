@@ -7,11 +7,13 @@ import os
 from pathlib import Path
 import re
 import tempfile
+from threading import RLock
 from uuid import uuid4
 
 
 DATA_DIR = Path(__file__).resolve().parent.parent / "har_data"
 _IDENTIFIER = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}\Z")
+_ACTIVITY_NAMES_LOCK = RLock()
 
 
 def safe_identifier(value: str) -> str:
@@ -72,23 +74,59 @@ def _activity_names(names) -> list[str]:
     return result
 
 
-def load_activity_names() -> list[str]:
-    """Read shared button labels; these names do not assign activities to objects."""
+def _read_activity_registry() -> dict:
     try:
         data = read_json(Path(DATA_DIR) / "activities.json")
     except FileNotFoundError:
-        return []
+        return {"schema_version": 1, "activities": []}
     if data.get("schema_version") != 1:
         raise ValueError("Unsupported activity-name schema.")
-    return _activity_names(data.get("activities"))
+    data["activities"] = _activity_names(data.get("activities"))
+    return data
+
+
+def load_activity_names(*, migrate_legacy=False) -> list[str]:
+    """Read shared button labels, optionally importing older data once.
+
+    The registry is UI metadata, never a model's label or feature schema.
+    """
+    with _ACTIVITY_NAMES_LOCK:
+        data = _read_activity_registry()
+        if migrate_legacy and not data.get("legacy_names_imported", False):
+            names = list(data["activities"])
+            for session in list_sessions():
+                for frame in session["frames"]:
+                    names.extend(frame.get("labels") or [])
+            for model in list_models():
+                names.extend(model.get("labels", []))
+            data["activities"] = _activity_names(names)
+            data["legacy_names_imported"] = True
+            atomic_json(Path(DATA_DIR) / "activities.json", data)
+        return data["activities"]
 
 
 def save_activity_names(names: list[str]) -> Path:
     """Atomically save reusable activity names separately from categories/models."""
-    payload = {"schema_version": 1, "activities": _activity_names(names)}
-    path = Path(DATA_DIR) / "activities.json"
-    atomic_json(path, payload)
+    names = _activity_names(names)
+    with _ACTIVITY_NAMES_LOCK:
+        payload = _read_activity_registry()
+        payload["activities"] = names
+        path = Path(DATA_DIR) / "activities.json"
+        atomic_json(path, payload)
     return path
+
+
+def register_activity_names(names: list[str]) -> None:
+    """Merge new labels without rescanning data or losing concurrent additions."""
+    names = _activity_names(names)
+    if not names:
+        return
+    with _ACTIVITY_NAMES_LOCK:
+        payload = _read_activity_registry()
+        merged = _activity_names([*payload["activities"], *names])
+        if merged != payload["activities"]:
+            payload["activities"] = merged
+            atomic_json(Path(DATA_DIR) / "activities.json", payload)
 
 
 def new_house_config() -> dict:
@@ -188,6 +226,10 @@ def validate_session(session: dict) -> dict:
 def save_session(session: dict) -> Path:
     validate_session(session)
     path = ensure_data() / "sessions" / f"{session['session_id']}.json"
+    # Register first: failures leave the previous session and live recording intact.
+    register_activity_names(list(dict.fromkeys(
+        label for frame in session["frames"] for label in (frame.get("labels") or [])
+    )))
     atomic_json(path, session)
     return path
 
@@ -210,6 +252,7 @@ def save_model(model: dict) -> Path:
         raise ValueError("A model must be a JSON object")
     identifier = safe_identifier(model.get("model_id"))
     path = ensure_data() / "models" / f"{identifier}.json"
+    register_activity_names(model.get("labels", []))
     atomic_json(path, model)
     return path
 

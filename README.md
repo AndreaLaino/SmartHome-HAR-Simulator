@@ -90,6 +90,12 @@ Stop & save ends recording while the simulation clock remains under its own
 Start/Stop control. Reset before recording another independent session. Hiding
 the panel leaves recording running. Custom names are shared through
 `har_data/activities.json`; adding a name does not train the model.
+The panel imports names from existing recordings and models once, then reads
+only this small shared list when opened. Saving a labelled recording or model
+updates the list automatically. The first opening after upgrading may therefore
+take longer; later openings do not scan the training history. Files copied
+manually into `har_data/` after this import do not add names automatically;
+use **Add activity** for any additional names.
 **Train & models…** opens the existing training tab.
 
 The panel starts with 12 activity labels: cooking, eating, relaxing, sleeping,

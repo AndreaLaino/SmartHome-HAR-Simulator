@@ -1,6 +1,7 @@
 """Persistence and category contracts for learned, cross-house HAR."""
 
 from contextlib import ExitStack
+from concurrent.futures import ThreadPoolExecutor
 import json
 from pathlib import Path
 import tempfile
@@ -70,6 +71,99 @@ class CategoryStorageTests(unittest.TestCase):
             with self.subTest(names=names), self.assertRaises(ValueError):
                 storage.save_activity_names(names)
             self.assertEqual(path.read_bytes(), before)
+
+    def test_activity_registry_imports_existing_names_once_and_preserves_custom_names(self):
+        session = self.session()
+        session_path = storage.ensure_data() / "sessions" / "session-a.json"
+        model_path = storage.DATA_DIR / "models" / "legacy-model.json"
+        storage.atomic_json(session_path, session)
+        storage.atomic_json(model_path, {"model_id": "legacy-model", "labels": ["reading", "Cooking"]})
+        path = storage.save_activity_names(["custom activity"])
+        originals = {p: p.read_bytes() for p in (session_path, model_path)}
+
+        self.assertEqual(storage.load_activity_names(migrate_legacy=True),
+                         ["custom activity", "cooking", "talking", "reading", "Cooking"])
+        self.assertTrue(storage.read_json(path)["legacy_names_imported"])
+        self.assertEqual({p: p.read_bytes() for p in originals}, originals)
+
+        with patch.object(storage, "list_sessions", side_effect=AssertionError("history scanned")), \
+                patch.object(storage, "list_models", side_effect=AssertionError("models loaded")):
+            storage.register_activity_names(["new activity"])
+            storage.save_activity_names(storage.load_activity_names())
+            self.assertEqual(storage.load_activity_names(migrate_legacy=True),
+                             ["custom activity", "cooking", "talking", "reading", "Cooking", "new activity"])
+
+    def test_activity_panel_reads_only_registry_after_initial_import(self):
+        from app.ui.training_panel import TrainingPanel
+
+        storage.load_activity_names(migrate_legacy=True)
+        storage.register_activity_names(["custom activity"])
+        panel = TrainingPanel.__new__(TrainingPanel)
+        panel._ensure_activities = Mock()
+        with patch.object(storage, "list_sessions", side_effect=AssertionError("history scanned")), \
+                patch.object(storage, "list_models", side_effect=AssertionError("models loaded")):
+            panel.load_activities()
+            panel.load_activities()
+        names = panel._ensure_activities.call_args.args[0]
+        self.assertIn("custom activity", names)
+        self.assertIn("cooking", names)
+        self.assertEqual(len(names), 13)
+
+    def test_failed_activity_import_preserves_registry_and_retries_next_time(self):
+        session_path = storage.ensure_data() / "sessions" / "session-a.json"
+        storage.atomic_json(session_path, self.session())
+        path = storage.save_activity_names(["custom activity"])
+        before = path.read_bytes()
+        with patch.object(storage.os, "replace", side_effect=OSError("disk full")):
+            with self.assertRaises(OSError):
+                storage.load_activity_names(migrate_legacy=True)
+        self.assertEqual(path.read_bytes(), before)
+        self.assertEqual(storage.load_activity_names(migrate_legacy=True),
+                         ["custom activity", "cooking", "talking"])
+
+    def test_session_and_model_saves_register_labels_without_scanning_other_files(self):
+        storage.load_activity_names(migrate_legacy=True)
+        session = self.session()
+        model = {"model_id": "new-model", "labels": ["reading", "cooking"]}
+        with patch.object(storage, "list_sessions", side_effect=AssertionError("history scanned")), \
+                patch.object(storage, "list_models", side_effect=AssertionError("models loaded")):
+            session_path = storage.save_session(session)
+            model_path = storage.save_model(model)
+            self.assertEqual(storage.load_activity_names(migrate_legacy=True),
+                             ["cooking", "talking", "reading"])
+        self.assertEqual(storage.read_json(session_path), session)
+        self.assertEqual(storage.read_json(model_path), model)
+
+    def test_failed_registry_update_preserves_saved_and_in_memory_recording(self):
+        from har.runtime import finish_recording
+
+        session = self.session()
+        path = storage.save_session(session)
+        before = path.read_bytes()
+        registry = storage.DATA_DIR / "activities.json"
+        registry_before = registry.read_bytes()
+        session["frames"][-1]["labels"] = ["new activity"]
+        ctx = AppContext(window=None)
+        recording = {"session": session, "labels": ["new activity"]}
+        ctx.house_state.values["har_recording"] = recording
+        with patch.object(storage.os, "replace", side_effect=OSError("disk full")):
+            with self.assertRaises(OSError):
+                finish_recording(ctx.house_state)
+        self.assertEqual(path.read_bytes(), before)
+        self.assertEqual(registry.read_bytes(), registry_before)
+        self.assertIs(ctx.house_state.values["har_recording"], recording)
+        self.assertEqual(finish_recording(ctx.house_state), path)
+        self.assertNotIn("har_recording", ctx.house_state.values)
+        self.assertEqual(storage.read_json(path), session)
+        self.assertIn("new activity", storage.load_activity_names())
+
+    def test_concurrent_activity_additions_preserve_all_names_and_import_marker(self):
+        storage.load_activity_names(migrate_legacy=True)
+        names = [f"custom activity {index}" for index in range(24)]
+        with ThreadPoolExecutor(max_workers=4) as workers:
+            list(workers.map(lambda name: storage.register_activity_names([name]), names))
+        self.assertEqual(set(storage.load_activity_names()), set(names))
+        self.assertTrue(storage.read_json(storage.DATA_DIR / "activities.json")["legacy_names_imported"])
 
     def test_corrupt_activity_registry_is_reported_without_rewriting_it(self):
         path = storage.save_activity_names(["cooking"])

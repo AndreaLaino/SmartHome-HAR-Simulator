@@ -23,10 +23,12 @@ class TrainingPanel:
         self._columns = None
         self.activity_vars = {}
         self.activity_buttons = {}
-        self.frame = ttk.Frame(parent, padding=8)
+        # Solid Tk backgrounds also cover the interval before a macOS repaint.
+        background = get_theme_palette("light")["background"]
+        self.frame = tk.Frame(parent, background=background, padx=8, pady=8)
         self.frame.columnconfigure(0, weight=1)
         self.frame.bind("<Destroy>", self._destroyed, add="+")
-        controls = ttk.Frame(self.frame)
+        controls = tk.Frame(self.frame, background=background)
         controls.grid(row=0, column=0, sticky="ew")
         self.record_button = ttk.Button(controls, text="Record", command=lambda: self._safe(self.record))
         self.record_button.pack(side="left")
@@ -37,7 +39,7 @@ class TrainingPanel:
         self.add_button = ttk.Button(controls, text="Add activity", command=self.show_add_activity)
         self.add_button.pack(side="right", padx=6)
 
-        options = ttk.Frame(self.frame)
+        options = tk.Frame(self.frame, background=background)
         options.grid(row=1, column=0, sticky="ew", pady=6)
         ttk.Label(options, text="Data use:").pack(side="left")
         self.partition = tk.StringVar(value="Source (training)")
@@ -49,15 +51,15 @@ class TrainingPanel:
         self.house_text = tk.StringVar()
         ttk.Label(options, textvariable=self.house_text).pack(side="left", padx=6)
 
-        list_frame = ttk.Frame(self.frame)
+        list_frame = tk.Frame(self.frame, background=background)
         list_frame.grid(row=2, column=0, sticky="ew")
         list_frame.columnconfigure(0, weight=1)
-        self.activity_canvas = tk.Canvas(list_frame, height=90, highlightthickness=0)
+        self.activity_canvas = tk.Canvas(list_frame, height=90, highlightthickness=0, background=background)
         self.activity_canvas.grid(row=0, column=0, sticky="ew")
         scroll = ttk.Scrollbar(list_frame, command=self.activity_canvas.yview)
         scroll.grid(row=0, column=1, sticky="ns")
         self.activity_canvas.configure(yscrollcommand=scroll.set)
-        self.activity_grid = ttk.Frame(self.activity_canvas)
+        self.activity_grid = tk.Frame(self.activity_canvas, background=background)
         self._grid_item = self.activity_canvas.create_window(0, 0, anchor="nw", window=self.activity_grid)
         self.activity_grid.bind("<Configure>", lambda _event: self.activity_canvas.configure(
             scrollregion=self.activity_canvas.bbox("all")))
@@ -72,7 +74,7 @@ class TrainingPanel:
         for widget in (self.activity_canvas, self.activity_grid, scroll, self.no_activity_button):
             self._bind_activity_scroll(widget)
 
-        self.add_row = ttk.Frame(self.frame)
+        self.add_row = tk.Frame(self.frame, background=background)
         self.add_row.columnconfigure(0, weight=1)
         self.new_activity = tk.StringVar()
         self.name_entry = ttk.Entry(self.add_row, textvariable=self.new_activity)
@@ -88,6 +90,7 @@ class TrainingPanel:
         self.recording_label = ttk.Label(self.frame, textvariable=self.recording_text, wraplength=650)
         self.recording_label.grid(row=5, column=0, sticky="ew", pady=(3, 0))
         self.stop_button.configure(state="disabled")
+        apply_theme_tree(self.frame, "light")
 
     def _safe(self, callback):
         try:
@@ -103,23 +106,18 @@ class TrainingPanel:
             self.visible = False
             self._cancel_poll()
             return
+        # Refresh while hidden; reapplying ttk styles here schedules a global redraw.
+        self._safe(self.load_activities)
         self.frame.pack(side=tk.BOTTOM, fill=tk.X, before=self.before, pady=(5, 0))
         self.visible = True
-        self._safe(self.load_activities)
-        apply_theme_tree(self.frame, "light")
         self._poll_job = self.frame.after(300, self._poll)
 
     def load_activities(self):
         names = [
             "cooking", "eating", "relaxing", "sleeping", "working", "cleaning",
             "laundry", "washing dishes", "using the bathroom", "showering",
-            "leaving home", "returning home", *storage.load_activity_names(),
+            "leaving home", "returning home", *storage.load_activity_names(migrate_legacy=True),
         ]
-        for session in storage.list_sessions():
-            for frame in session["frames"]:
-                names.extend(frame.get("labels") or [])
-        for model in storage.list_models():
-            names.extend(model.get("labels", []))
         self._ensure_activities(names)
 
     def _ensure_activities(self, names):
@@ -138,7 +136,6 @@ class TrainingPanel:
             self._bind_activity_scroll(self.activity_buttons[name])
             added = True
         if added:
-            apply_theme_tree(self.activity_grid, "light")
             self._layout_buttons()
         self._refresh_activity_colors()
 
@@ -258,8 +255,7 @@ class TrainingPanel:
 
     def add_activity(self):
         name = self.new_activity.get().strip()
-        names = storage.load_activity_names()
-        storage.save_activity_names([*names, name])
+        storage.register_activity_names([name])
         self._ensure_activities([name])
         self.new_activity.set("")
         self.add_row.grid_remove()

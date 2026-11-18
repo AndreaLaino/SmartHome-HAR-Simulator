@@ -294,6 +294,115 @@ class TkSmokeTests(unittest.TestCase):
         self.assertEqual(cooking.cget("background"), ACTIVITY_SELECTED_COLOR)
         panel.stop_button.invoke()
 
+    def test_training_panel_is_ready_before_first_display_and_reopening(self):
+        from app.ui import training_panel
+        from app.ui.theme import get_theme_palette
+
+        self.load_home()
+        preparing = []
+        first_display = []
+        original_load = training_panel.TrainingPanel.load_activities
+        original_theme = training_panel.apply_theme_tree
+
+        def load_activities(panel):
+            if not first_display:
+                def on_map(_event):
+                    first_display.append((
+                        panel.frame.cget("background"),
+                        panel.activity_canvas.cget("background"),
+                        panel.house_text.get(), panel.recording_text.get(),
+                        set(panel.activity_buttons),
+                    ))
+                panel.frame.bind("<Map>", on_map, add="+")
+            # Even if Tk redraws while preparing, the incomplete panel must stay hidden.
+            self.window.update_idletasks()
+            preparing.append(panel.frame.winfo_ismapped())
+            return original_load(panel)
+
+        def apply_theme(widget, *args, **kwargs):
+            if widget.master is self.ctx.canvas.master:
+                self.window.update_idletasks()
+                preparing.append(widget.winfo_ismapped())
+            return original_theme(widget, *args, **kwargs)
+
+        with patch.object(training_panel.TrainingPanel, "load_activities", load_activities), \
+                patch.object(training_panel, "apply_theme_tree", apply_theme):
+            panel, hat = self.open_training_panel()
+            hat.event_generate("<Button-1>", x=17, y=17)
+            self.pump()
+            self.assertFalse(panel.frame.winfo_ismapped())
+            hat.event_generate("<Button-1>", x=17, y=17)
+            self.pump()
+        self.assertEqual(preparing, [False, False, False])
+        self.assertEqual(len(first_display), 2)
+        palette = get_theme_palette("light")
+        for frame_bg, canvas_bg, house, recording, activities in first_display:
+            self.assertEqual(frame_bg, palette["background"])
+            self.assertEqual(canvas_bg, palette["background"])
+            self.assertEqual(house, "House: " + self.ctx.har_config["house_label"])
+            self.assertTrue(recording.startswith("Not recording"))
+            self.assertIn("cooking", activities)
+        self.assertTrue(panel.frame.winfo_ismapped())
+        self.assertIsNotNone(panel._poll_job)
+
+    def test_training_panel_reopening_keeps_solid_backgrounds_and_does_not_reset_styles(self):
+        from tkinter import ttk
+        from app.ui.theme import get_theme_palette
+
+        self.load_home()
+        panel, hat = self.open_training_panel()
+        background = get_theme_palette("light")["background"]
+        containers = (panel.frame, panel.record_button.master, panel.partition_combo.master,
+                      panel.activity_canvas.master, panel.activity_grid, panel.add_row)
+        for container in containers:
+            self.assertIn("background", container.keys())
+            self.assertEqual(container.cget("background"), background)
+        panel.activity_buttons["cooking"].invoke()
+        panel.record_button.invoke()
+        session_id = har_runtime.recording_status(self.ctx)["session_id"]
+        style_changes = []
+        original_configure = ttk.Style.configure
+
+        def configure_style(style, name, query_opt=None, **options):
+            if options:
+                style_changes.append(name)
+            return original_configure(style, name, query_opt, **options)
+
+        with patch.object(ttk.Style, "configure", configure_style):
+            for _ in range(5):
+                hat.event_generate("<Button-1>", x=17, y=17)
+                self.pump()
+                self.assertFalse(panel.frame.winfo_ismapped())
+                self.assertIsNone(panel._poll_job)
+                hat.event_generate("<Button-1>", x=17, y=17)
+                self.pump()
+                self.assertTrue(panel.frame.winfo_ismapped())
+                for container in containers:
+                    self.assertEqual(container.cget("background"), background)
+                self.assertEqual(panel.selected_labels(), ["cooking"])
+                self.assertEqual(har_runtime.recording_status(self.ctx)["session_id"], session_id)
+                self.assertIsNotNone(panel._poll_job)
+        self.assertEqual(style_changes, [])
+        panel.stop_button.invoke()
+
+    def test_training_panel_reopens_without_loading_recordings_or_models(self):
+        self.load_home()
+        har_storage.save_activity_names(["reading"])
+        panel, hat = self.open_training_panel()
+        self.assertIn("reading", panel.activity_buttons)
+        har_storage.register_activity_names(["custom from saved recording"])
+        with patch.object(har_storage, "list_sessions", side_effect=AssertionError("history scanned")), \
+                patch.object(har_storage, "list_models", side_effect=AssertionError("models loaded")):
+            hat.event_generate("<Button-1>", x=17, y=17)
+            self.pump()
+            hat.event_generate("<Button-1>", x=17, y=17)
+            self.pump()
+        self.assertTrue(panel.visible)
+        self.assertIn("custom from saved recording", panel.activity_buttons)
+        self.assertIn("cooking", panel.activity_buttons)
+        self.assertNotIn("history scanned", panel.status.get())
+        self.assertNotIn("models loaded", panel.status.get())
+
     def test_training_hat_records_truth_saves_custom_names_and_preserves_failed_saves(self):
         self.load_home()
         panel, hat = self.open_training_panel()
