@@ -244,6 +244,35 @@ class TkSmokeTests(unittest.TestCase):
         self.assertIn("Activate the RF + Gradient Boosting comparison", label.cget("text"))
         self.assertIn("eating (80%)", label.secondary.cget("text"))
 
+    def test_activity_results_keep_their_height_when_timer_space_is_limited(self):
+        self.load_home()
+        self.window.geometry("1480x720")
+        self.window.deiconify()
+        self.ctx.simulation_menu.invoke("Manual")
+        self.pump()
+        label = self.ctx.activity_label
+        # Larger fonts also exercise the wrapping needed on other platforms.
+        for widget in (label, label.secondary):
+            widget.configure(font=("Helvetica", 14))
+        result = {"status": "ready", "activities": ["eating", "relaxing"],
+                  "activity_confidences": {"eating": .8, "relaxing": .95}}
+        for panel_width in (420, 320):
+            with self.subTest(panel_width=panel_width):
+                panel = self.ctx.activity_frame
+                panel.master.configure(width=panel_width)
+                label.show_prediction({"comparisons": {"random_forest": result, "gradient_boosting": result}})
+                self.pump()
+                self.assertTrue(panel.winfo_ismapped())
+                for widget in (label, label.secondary):
+                    self.assertTrue(widget.winfo_ismapped())
+                    self.assertLessEqual(widget.winfo_reqwidth(), widget.winfo_width())
+                    self.assertLessEqual(widget.winfo_reqheight(), widget.winfo_height())
+                timer = self.ctx.timer_frame.master
+                self.assertTrue(timer.winfo_ismapped())
+                self.assertGreater(timer.winfo_height(), 0)
+                self.assertLessEqual(timer.winfo_y() + timer.winfo_height(), panel.winfo_y())
+                self.assertLessEqual(panel.winfo_y() + panel.winfo_height(), panel.master.winfo_height())
+
     def test_manual_mode_displays_both_saved_algorithms_from_live_observations(self):
         from har.demo import demo_sessions
         from har.learning import train_comparison

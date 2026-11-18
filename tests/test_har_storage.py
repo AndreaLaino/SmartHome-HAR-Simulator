@@ -498,12 +498,17 @@ class HARScenarioTests(unittest.TestCase):
 
     def test_custom_categories_and_object_names_are_safely_quoted(self):
         ctx = AppContext(window=None, load_active=True)
-        ctx.read_devices = [Device('device,"a"\nrow', 0, 0, "Custom", 1, 0, 0, 1, categories=['Custom,"category"'])]
         path = self.root / "quoted.csv"
-        path.write_text(scenario._serialize_scenario(ctx), encoding="utf-8")
-        *_, devices, doors = read.read_coordinates_from_file(path)
-        self.assertEqual(devices[0].name, ctx.read_devices[0].name)
-        self.assertEqual(devices[0].categories, ctx.read_devices[0].categories)
+        for newline in ("\n", "\r\n", "\r"):
+            with self.subTest(newline=repr(newline)):
+                ctx.read_devices = [Device(f'device,"a"{newline}row', 0, 0, "Custom", 1, 0, 0, 1,
+                                           categories=['Custom,"category"'])]
+                with patch.object(scenario, "ask_confirmation", return_value=True), \
+                        patch.object(scenario.messagebox, "showinfo"):
+                    self.assertTrue(scenario._write_scenario(ctx, path))
+                *_, devices, doors = read.read_coordinates_from_file(path)
+                self.assertEqual(devices[0].name, ctx.read_devices[0].name)
+                self.assertEqual(devices[0].categories, ctx.read_devices[0].categories)
 
 
 if __name__ == "__main__":

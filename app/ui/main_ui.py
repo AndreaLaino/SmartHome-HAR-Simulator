@@ -453,12 +453,12 @@ def build_home_ui(ctx: AppContext):
     timer_frame.pack(fill=tk.BOTH, expand=True)
     ctx.timer_frame = timer_frame
 
-    # Activity at the bottom - fixed smaller space
+    # Reserve the results' requested height before giving the timer the remaining space.
     activity_container = set_theme_role(
         tk.Frame(right_container, bg="lightgrey", width=400, height=150),
         "panel",
     )
-    activity_container.pack(side=tk.BOTTOM, fill=tk.X, expand=False, padx=10, pady=2)
+    activity_container.pack(side=tk.BOTTOM, fill=tk.X, expand=False, padx=10, pady=2, before=timer_container)
     activity_container.pack_propagate(False)
     ctx.activity_frame = activity_container
 
