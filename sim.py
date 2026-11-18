@@ -28,6 +28,7 @@ from lighting import LIGHT_TYPES, automatic_light_states, manual_light_at_switch
 from log import log_move, log_sensor_event, log_device_event, log_door_event, log_llm_cycle_event
 from house_state import HouseState
 from canvas_zoom import event_to_logical, to_canvas
+from models import is_fixture
 
 SMARTMETER_ACTIVE_THRESHOLD_W = 1.0
 
@@ -306,6 +307,8 @@ def _snapshot_device_smartmeters(
     updated_smartmeters,
 ):
     for device in d_devices:
+        if is_fixture(device):
+            continue
         dev_name = device.name
         current_cons = device.current_consumption
 
@@ -448,20 +451,31 @@ def _handle_pir_interaction(
     return closest_sensor_pir
 
 
-def _handle_weight_interaction(house_state: HouseState, s_sensors, state_store, timestamp, click_pos):
+def _handle_weight_interaction(house_state: HouseState, s_sensors, state_store, timestamp, click_pos, devices=()):
     weight_adapter = WeightSensorAdapter()
     click_x, click_y = click_pos
 
+    objects_by_name = {obj.name: obj for obj in devices}
     for sensor in s_sensors:
         if sensor.type != "Weight":
             continue
 
-        distance = calculate_distance(click_x, click_y, sensor.x, sensor.y)
+        target = objects_by_name.get(sensor.associated_device, sensor)
+        distance = calculate_distance(click_x, click_y, target.x, target.y)
         target_state = 1 if distance < 10 else 0
         reason = "click_nearby" if target_state == 1 else "auto_off"
         _, sensor_state = weight_adapter.update(house_state, sensor, target_state, render=False)
         sensor.state = float(sensor_state)
         _record_binary_sensor_event(house_state, state_store, timestamp, sensor, "Weight", sensor_state, reason)
+
+    _sync_fixture_states(devices, s_sensors)
+
+
+def _sync_fixture_states(devices, sensors):
+    for obj in devices:
+        if is_fixture(obj):
+            obj.state = int(any(s.type == "Weight" and s.associated_device == obj.name
+                                and float(s.state) > float(s.min_val) for s in sensors))
 
 
 def _handle_switch_interaction(house_state: HouseState, d_doors, s_sensors, state_store, timestamp):
@@ -489,7 +503,7 @@ def _handle_device_toggle_at_click(canvas, house_state: HouseState, timer_app_in
     d_devices = runtime_sources["devices"]
 
     for device in d_devices:
-        if device.type in LIGHT_TYPES:
+        if device.type in LIGHT_TYPES or is_fixture(device):
             continue  # Lights use their switch or automatic presence control.
         if abs(device.x - click_x) <= 5 and abs(device.y - click_y) <= 5:
             toggle_device_state(
@@ -529,8 +543,8 @@ def _prepare_interaction_context(canvas, event, timer_app_instance, house_state:
     log_move(house_state, timestamp, int(click_x), int(click_y))
 
     s_sensors = with_integrated_light_meters(runtime_sources["sensors"], runtime_sources["devices"])
-    if not s_sensors and not any(device.type in LIGHT_TYPES for device in runtime_sources["devices"]):
-        print("No sensors exists.")
+    if not s_sensors and not runtime_sources["devices"]:
+        print("No devices or sensors exist.")
         return None
 
     return {
@@ -574,7 +588,7 @@ def _run_interaction_flow(canvas, event, timer_app_instance, runtime_sources: di
         toggle_device_state(canvas, None, house_state, timer_app_instance, runtime_sources,
                             x=switched_light.x, y=switched_light.y, render=False,
                             reason="light_switch", target_device=switched_light)
-    elif closest_sensor_pir:
+    elif closest_sensor_pir or not s_sensors:
         _handle_device_toggle_at_click(
             canvas,
             house_state,
@@ -595,7 +609,7 @@ def _run_interaction_flow(canvas, event, timer_app_instance, runtime_sources: di
                 render=False,
             )
 
-    _handle_weight_interaction(house_state, s_sensors, state_store, timestamp, click_pos)
+    _handle_weight_interaction(house_state, s_sensors, state_store, timestamp, click_pos, d_devices)
     interaction_with_door(canvas, event, d_doors, render=False)
     _handle_switch_interaction(house_state, d_doors, s_sensors, state_store, timestamp)
     _apply_automatic_light_control(house_state, runtime_sources, timestamp)
@@ -665,6 +679,9 @@ def toggle_device_state(canvas, event, house_state, timer_app_instance, runtime_
     smartmeter_sensors = [s for s in s_sensors if s.type == "Smart Meter"]
 
     for i, device in enumerate(d_devices):
+        if is_fixture(device):
+            cycles_store.pop(device.name, None)
+            continue
         if target_device is not None and device is not target_device:
             continue
         dev_name, dx, dy, type_d, power, dev_state, min_c, max_c = device.name, device.x, device.y, device.type, device.power, device.state, device.min_consumption, device.max_consumption
@@ -807,6 +824,7 @@ def update_sensors(canvas, timer_app_instance, activity_label, house_state: Hous
 
     _snapshot_device_smartmeters(house_state, s_sensors, d_devices, state_store, timestamp, updated_smartmeters)
     _sample_binary_sensors(house_state, s_sensors, state_store, timestamp, fast)
+    _sync_fixture_states(d_devices, s_sensors)
     _render_device_states(ui_canvas, d_devices)
     _render_sensor_states(ui_canvas, s_sensors)
     _refresh_room_power(ui_canvas, runtime_sources)

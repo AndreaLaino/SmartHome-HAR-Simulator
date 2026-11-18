@@ -3,7 +3,7 @@ from __future__ import annotations
 import os, csv, shutil, json, glob, io
 import tempfile
 from tkinter import messagebox
-from app.io.safe_dialog import ask_open_file, ask_open_files, ask_save_file, ask_directory
+from app.io.safe_dialog import ask_open_file, ask_open_files, ask_save_file
 import tkinter as tk
 from tkinter import ttk
 from datetime import datetime
@@ -20,8 +20,9 @@ from app.logging_setup import setup_logging
 from app.confirmations import ask_confirmation
 from app.save_paths import ensure_houses_dir, ensure_saves_dir, ensure_devices_dir
 from app.ui.theme import apply_theme_tree, get_widget_theme_mode
-from models import Point, Sensor, Device, Door, Wall
+from models import Point, Sensor, Device, Door, Wall, is_fixture
 from lighting import LIGHT_TYPES, ensure_light_switches
+from har.storage import new_house_config, validate_house_config
 
 
 def _ask_overwrite_or_append(parent, dest_path: str) -> str:
@@ -46,8 +47,6 @@ def _ask_overwrite_or_append(parent, dest_path: str) -> str:
         return 'append'
     else:
         return ''  # Cancelled
-
-
 
 
 logger = setup_logging("io.scenario")
@@ -301,16 +300,36 @@ def _save_records_to_csv(records: list, filepath: str, data_type: str, device_na
             writer.writerow(merged_data[ts])
 
 
+def _prepare_har_scene_change(ctx: AppContext) -> None:
+    """Save observations before closing a form tied to the previous house."""
+    from har.runtime import finish_recording
+    from app.controllers.simulation import end_manual_session
+
+    finish_recording(ctx.house_state)
+    if not end_manual_session(ctx):
+        raise ValueError("The current simulation could not be saved and closed.")
+    editor = getattr(ctx, "_learned_har_window", None)
+    if editor is not None:
+        try:
+            editor.close()
+        except tk.TclError:
+            # A previously destroyed Tk window no longer owns editable data.
+            ctx._learned_har_window = None
+
+
 def _load_scenario(ctx: AppContext, canvas, filename: str) -> None:
     """Load the scenario from 'filename' and draw it on the canvas."""
+    # A failed write must leave both the recording and the old house intact.
+    _prepare_har_scene_change(ctx)
     (ctx.r_points,
      ctx.read_walls,
      ctx.read_sensors,
      ctx.read_devices,
      ctx.read_doors) = read_coordinates_from_file(filename)
-    from read import read_room_overrides
+    from read import read_room_overrides, read_har_config
     ctx.room_overrides.clear()
     ctx.room_overrides.update(read_room_overrides)
+    ctx.har_config = dict(read_har_config) if read_har_config else new_house_config()
 
     ctx.load_active = True
     ctx.current_file = filename
@@ -422,6 +441,8 @@ def _serialize_scenario(ctx: AppContext) -> str:
         csvwriter.writerow(["Devices"])
         srcd = devices if not ctx.load_active else ctx.read_devices
         for d in srcd:
+            if is_fixture(d):
+                continue
             (name, x, y, typ, power, state, min_c, max_c, curr_c, c_dir) = _device_to_tuple(d)
             state = 0
             curr_c = 0.0
@@ -432,6 +453,12 @@ def _serialize_scenario(ctx: AppContext) -> str:
                 c_dir if c_dir is not None else "None",
                 *([d.light_control] if typ in LIGHT_TYPES else []),
             ])
+
+        csvwriter.writerow([])
+        csvwriter.writerow(["Fixtures"])
+        for obj in srcd:
+            if is_fixture(obj):
+                csvwriter.writerow([obj.name, int(obj.x), int(obj.y), obj.type])
 
         csvwriter.writerow([])
         csvwriter.writerow(["Light Switches"])
@@ -452,6 +479,29 @@ def _serialize_scenario(ctx: AppContext) -> str:
         csvwriter.writerow(["Rooms"])
         for room_id, room_type in sorted(ctx.room_overrides.items()):
             csvwriter.writerow([room_id, room_type])
+
+        # Keep HAR metadata separate so all historical positional rows retain
+        # their layout, including light controls and independent switches.
+        config = getattr(ctx, "har_config", None)
+        if config is None:
+            config = new_house_config()
+            ctx.har_config = config
+        csvwriter.writerow([])
+        csvwriter.writerow(["HAR metadata"])
+        csvwriter.writerow(["config", json.dumps(validate_house_config(config), ensure_ascii=False, allow_nan=False)])
+        csvwriter.writerow([])
+        csvwriter.writerow(["HAR categories"])
+        for kind, objects in (("device", srcd), ("sensor", src)):
+            for obj in objects:
+                if kind == "sensor" and obj.integrated:
+                    continue
+                categories = getattr(obj, "categories", None)
+                if categories is not None:
+                    if not isinstance(categories, list) or any(
+                        not isinstance(category, str) or not category.strip() for category in categories
+                    ):
+                        raise ValueError("Object categories must be a list of nonempty names")
+                    csvwriter.writerow([kind, obj.name, json.dumps(categories, ensure_ascii=False)])
         return csvfile.getvalue()
 
 
@@ -501,6 +551,7 @@ def _clear_scenario(ctx: AppContext, canvas) -> None:
     """Internal helper: clear the scenario from canvas and memory, no confirmation."""
     from label_layout import forget_canvas_labels
 
+    _prepare_har_scene_change(ctx)
     forget_canvas_labels(canvas)
     for tag in [
         'point', 'wall', 'sensor', 'line', 'device', 'door', 'fov',
@@ -534,6 +585,7 @@ def _clear_scenario(ctx: AppContext, canvas) -> None:
         pass
     ctx.rooms.clear()
     ctx.room_overrides.clear()
+    ctx.har_config = new_house_config()
 
     ctx.load_active = False
     ctx.current_file = None
@@ -572,21 +624,9 @@ def open_scenario(ctx: AppContext, canvas) -> None:
     _load_scenario(ctx, canvas, filename)
 
 
-
 def _sanitize(name: str) -> str:
     return "".join(ch if ch.isalnum() or ch in "-._" else "-" for ch in (name or "").strip())
 
-def _unique_path(path: str) -> str:
-    """If it already exists, add _2, _3, ... before the extension."""
-    if not os.path.exists(path):
-        return path
-    root, ext = os.path.splitext(path)
-    i = 2
-    while True:
-        p2 = f"{root}_{i}{ext}"
-        if not os.path.exists(p2):
-            return p2
-        i += 1
 
 def _ask_choice(parent, title: str, label: str, choices: list[str], default: str | None = None) -> str | None:
     win = tk.Toplevel(parent) if parent else tk.Toplevel()

@@ -61,6 +61,8 @@ Thumbs.db
 
 # Project simulation outputs (temporary data)
 /saves/
+/har_data/
+/recognition_library/
 llm_smartmeter_profiles.json
 !LLM/smartmeter/llm_smartmeter_profiles.json
 **/*_case_output/
@@ -104,3 +106,9 @@ latex/**/*.run.xml
 latex/**/*.synctex.gz
 latex/**/*.toc
 devices/dht_t2.csv
+
+# Output for visual representation
+/outputs/
+
+# Theory of the project
+/theory/

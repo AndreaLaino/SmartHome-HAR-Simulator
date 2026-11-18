@@ -3,14 +3,33 @@ import tkinter as tk
 
 from timer import TimerApp
 from sim import start_simulation, interaction, update_sensors, render_simulation_state
-from activity import monitor_activities, process_activities, close_current_activity
+from activity import monitor_activities, process_activities, close_current_activity, reset_activity_display
 from log import start_interaction_log_session, stop_interaction_log_session
 from app.context import AppContext
 from app.logging_setup import setup_logging
 from canvas_zoom import set_canvas_cursor
-from lighting import LIGHT_TYPES
 
 logger = setup_logging("controllers.simulation")
+
+
+def _finish_har_recording(ctx: AppContext) -> bool:
+    """Save pending observations before an operation can discard runtime data."""
+    from har.runtime import finish_recording
+
+    try:
+        finish_recording(ctx.house_state)
+    except (OSError, ValueError) as error:
+        from tkinter import messagebox
+
+        logger.warning("Unable to save HAR recording: %s", error)
+        messagebox.showerror(
+            "Recording was not saved",
+            f"The recording is still available in this session.\n\n{error}\n\n"
+            "Resolve the problem and stop the recording again before resetting or closing.",
+            parent=ctx.window,
+        )
+        return False
+    return True
 
 
 def _resolve_runtime_sources(load_active: bool) -> dict:
@@ -39,18 +58,48 @@ def _resolve_runtime_sources(load_active: bool) -> dict:
     }
 
 
-def _cleanup_manual_sim(ctx: AppContext):
+def _cleanup_manual_sim(ctx: AppContext, expected_timer=None):
     """Cleanup function called after stopping manual simulation."""
+    timer = getattr(ctx, "timer_app_instance", None)
+    if expected_timer is not None and timer is not expected_timer:
+        return
+    if not _finish_har_recording(ctx):
+        return
+    close_timer = getattr(timer, "close", None)
+    if callable(close_timer):
+        close_timer()
     setattr(ctx, 'timer_app_instance', None)
+    ctx._manual_reset_pending = False
     setattr(ctx, '_manual_runtime_sources', None)
     setattr(ctx, '_restore_manual_canvas_binding', None)
     if getattr(ctx, "simulation_menu", None) is not None:
         ctx.simulation_menu.entryconfig("Manual", state="normal")
     if hasattr(ctx, 'activity_label') and ctx.activity_label is not None:
         try:
-            ctx.activity_label.config(text="Activity: None")
+            reset_activity_display(ctx.activity_label)
         except:
             pass
+
+
+def end_manual_session(ctx: AppContext) -> bool:
+    """Synchronously detach a house's timer before opening a different house."""
+    timer = getattr(ctx, "timer_app_instance", None)
+    if timer is None:
+        return True
+    if not _finish_har_recording(ctx):
+        return False
+    timer.is_running = False
+    close_current_activity(timer, ctx.activity_label, ctx.house_state)
+    stop_interaction_log_session(ctx.house_state)
+    state = ctx.house_state.sim_state()
+    job, canvas = state.get("sensor_update_job"), state.get("sensor_update_canvas")
+    state.update(sensor_update_job=None, sensor_update_canvas=None, sensor_update_token=None)
+    if job is not None and canvas is not None:
+        canvas.after_cancel(job)
+    if ctx.canvas is not None:
+        ctx.canvas.unbind("<Button-1>")
+    _cleanup_manual_sim(ctx, expected_timer=timer)
+    return True
 
 
 def start_sim(ctx: AppContext):
@@ -67,23 +116,28 @@ def start_sim(ctx: AppContext):
     runtime_sources = _resolve_runtime_sources(ctx.load_active)
     from app.ui.rooms import refresh_rooms
     runtime_sources["rooms"] = refresh_rooms(ctx, draw=False)
+    # Keep the same mutable config so loading a trained model while the
+    # simulation is paused takes effect without replacing the runtime session.
+    if not isinstance(getattr(ctx, "har_config", None), dict):
+        ctx.har_config = {}
+    runtime_sources["har_config"] = ctx.har_config
     s_sensors = runtime_sources["sensors"]
-    if not s_sensors and not any(
-        device.type in LIGHT_TYPES for device in runtime_sources.get("devices", [])
-    ):
-        messagebox.showwarning("Error", "No sensors found to start the simulation.")
+    # Device ON/OFF states are observations too; a category by itself still
+    # cannot recognize an activity without a trained model.
+    if not s_sensors and not runtime_sources.get("devices"):
+        messagebox.showwarning("Error", "Add a device or sensor before starting the simulation.")
         return
 
-    try:
-        ctx.house_state.clear_runtime_state()
-    except Exception:
-        pass
+    if not _finish_har_recording(ctx):
+        return
+    ctx.house_state.clear_runtime_state()
+    ctx._manual_reset_pending = False
     sensor_states_store = ctx.house_state.sensor_states()
 
     # Clean up previous widgets if they exist
     if hasattr(ctx, 'activity_label') and ctx.activity_label is not None:
         try:
-            ctx.activity_label.config(text="Activity: None")
+            reset_activity_display(ctx.activity_label)
         except:
             pass
 
@@ -138,14 +192,14 @@ def start_sim(ctx: AppContext):
             logger.warning("Unable to set Smart Meter mode: %s", e)
         runtime_initialized = True
         _bind_canvas_click()
-        start_simulation(ctx.canvas, timer_app_instance, ctx.activity_label, ctx.house_state, runtime_sources)
-        monitor_activities(ctx.canvas, ctx.activity_label, timer_app_instance, sensor_states_store, ctx.house_state, runtime_sources)
         interaction_state = ctx.house_state.interaction_log_state()
         if interaction_state.get("interaction_file") is None:
             start_interaction_log_session(
                 ctx.house_state,
                 timer_app_instance.get_simulated_time(),
             )
+        start_simulation(ctx.canvas, timer_app_instance, ctx.activity_label, ctx.house_state, runtime_sources)
+        monitor_activities(ctx.canvas, ctx.activity_label, timer_app_instance, sensor_states_store, ctx.house_state, runtime_sources)
 
     def _on_pause():
         # Do not erase Select/placement bindings if the timer is paused while
@@ -157,6 +211,9 @@ def start_sim(ctx: AppContext):
                 set_canvas_mode("manual", "Manual paused · press Start")
 
     def _on_reset():
+        if not _finish_har_recording(ctx):
+            return False
+        ctx._manual_reset_pending = True
         close_current_activity(
             timer_app_instance,
             ctx.activity_label,
@@ -169,7 +226,7 @@ def start_sim(ctx: AppContext):
         activate_select = getattr(ctx, "_activate_canvas_select", None)
         if callable(activate_select):
             activate_select()
-        ctx.window.after(100, lambda: _cleanup_manual_sim(ctx))
+        ctx.window.after(100, lambda: _cleanup_manual_sim(ctx, expected_timer=timer_app_instance))
 
     def _restore_canvas_binding():
         enable_all_menus(ctx)
@@ -201,10 +258,8 @@ def start_sim(ctx: AppContext):
     ctx._restore_manual_canvas_binding = _restore_canvas_binding
 
     if not hasattr(ctx, 'activity_label') or ctx.activity_label is None:
-        ctx.activity_label = tk.Label(
-            ctx.activity_frame, text="Activity: None", font=("Helvetica", 16), bg="white", fg="black"
-        )
-        ctx.activity_label.pack(pady=15, padx=10, fill=tk.BOTH, expand=True)
+        from app.ui.activity_comparison import ActivityComparisonLabel
+        ctx.activity_label = ActivityComparisonLabel(ctx.activity_frame)
 
     apply_theme = getattr(ctx, "_apply_theme", None)
     if callable(apply_theme):
@@ -263,6 +318,8 @@ def exit_app(ctx: AppContext):
         "Exit",
         "Are you sure you want to close the application?",
     ):
+        if not _finish_har_recording(ctx):
+            return
         try:
             from app.preferences import capture_view_preferences, save_preferences
 
@@ -293,6 +350,7 @@ def exit_app(ctx: AppContext):
 __all__ = [
     "start_sim",
     "activate_manual_interaction",
+    "end_manual_session",
     "enable_all_menus",
     "exit_app",
 ]

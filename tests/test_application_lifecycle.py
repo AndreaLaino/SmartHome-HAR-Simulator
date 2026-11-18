@@ -127,6 +127,7 @@ class ManualControllerLifecycleTests(unittest.TestCase):
         self.ctx.house_state.runtime()["old"] = True
         callbacks = self.create_session()
         self.assertIs(self.ctx.timer_app_instance, self.timer)
+        self.assertFalse(self.ctx._manual_reset_pending)
         self.assertIs(self.ctx._manual_runtime_sources, self.sources)
         self.assertIs(self.sources["rooms"], self.rooms)
         self.assertEqual(self.ctx.house_state.sensor_states(), {})
@@ -223,14 +224,38 @@ class ManualControllerLifecycleTests(unittest.TestCase):
         self.stop_log.assert_called_once_with(self.ctx.house_state)
         self.ctx._activate_canvas_select.assert_called_once_with()
         self.assertIs(self.ctx.timer_app_instance, self.timer)
+        self.assertTrue(self.ctx._manual_reset_pending)
         delay, deferred = self.ctx.window.after.call_args.args
         self.assertEqual(delay, 100)
         deferred()
         self.assertIsNone(self.ctx.timer_app_instance)
+        self.assertFalse(self.ctx._manual_reset_pending)
         self.assertIsNone(self.ctx._manual_runtime_sources)
         self.assertIsNone(self.ctx._restore_manual_canvas_binding)
         self.ctx.simulation_menu.entryconfig.assert_any_call("Manual", state="normal")
         self.ctx.activity_label.config.assert_called_with(text="Activity: None")
+
+    def test_failed_recording_save_does_not_mark_reset_pending(self):
+        callbacks = self.create_session()
+        self.ctx.window.after.reset_mock()
+        with patch.object(controller, "_finish_har_recording", return_value=False):
+            self.assertFalse(callbacks["reset_callback"]())
+        self.assertFalse(self.ctx._manual_reset_pending)
+        self.assertIs(self.ctx.timer_app_instance, self.timer)
+        self.ctx.window.after.assert_not_called()
+        self.close_activity.assert_not_called()
+
+    def test_stale_cleanup_cannot_clear_another_timers_pending_reset(self):
+        self.create_session()
+        old_timer = self.timer
+        replacement = SimpleNamespace(is_running=False)
+        self.ctx.timer_app_instance = replacement
+        self.ctx._manual_reset_pending = True
+        with patch.object(controller, "_finish_har_recording") as finish:
+            controller._cleanup_manual_sim(self.ctx, expected_timer=old_timer)
+        finish.assert_not_called()
+        self.assertTrue(self.ctx._manual_reset_pending)
+        self.assertIs(self.ctx.timer_app_instance, replacement)
 
     def test_restoring_running_manual_mode_rebinds_click_without_starting_timer(self):
         self.create_session()

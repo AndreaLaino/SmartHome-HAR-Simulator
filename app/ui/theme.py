@@ -23,11 +23,6 @@ LIGHT_PALETTE = {
 }
 
 
-def get_theme_mode(source: str | Mapping[str, object] | None) -> str:
-    """Compatibility helper: the application now has one light appearance."""
-    return "light"
-
-
 def get_theme_palette(source: str | Mapping[str, object] | None) -> dict[str, str]:
     return LIGHT_PALETTE.copy()
 

@@ -172,6 +172,11 @@ def set_zoom(
     if callable(scale_label_anchors):
         scale_label_anchors(ratio)
     canvas._zoom_factor = target
+    if getattr(canvas, "_show_pir_fov", False):
+        # Canvas scaling moves image anchors but cannot resize their pixels.
+        from utils import refresh_pir_fov
+
+        refresh_pir_fov(canvas)
     background_callback = getattr(canvas, "_redraw_zoom_background", None)
     if redraw_background and callable(background_callback):
         background_callback(target)
@@ -220,16 +225,6 @@ def zoom_in(canvas, *, screen_x=None, screen_y=None) -> float:
 
 def zoom_out(canvas, *, screen_x=None, screen_y=None) -> float:
     return set_zoom(canvas, get_zoom(canvas) / ZOOM_STEP, screen_x=screen_x, screen_y=screen_y)
-
-
-def zoom_trackpad(canvas, direction: int, *, screen_x: float, screen_y: float) -> float:
-    factor = TRACKPAD_ZOOM_STEP if direction > 0 else 1.0 / TRACKPAD_ZOOM_STEP
-    return set_zoom(
-        canvas,
-        get_zoom(canvas) * factor,
-        screen_x=screen_x,
-        screen_y=screen_y,
-    )
 
 
 def queue_trackpad_zoom(

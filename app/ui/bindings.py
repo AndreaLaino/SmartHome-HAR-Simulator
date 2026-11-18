@@ -34,8 +34,6 @@ def _sensor_type(name: str, sensor_states: dict) -> str | None:
 def _is_smart_meter_sensor(name: str, sensor_states: dict) -> bool:
     return _sensor_type(name, sensor_states) == "Smart Meter"
 
-def _is_sensor_type(name: str, sensor_states: dict, wanted_type: str) -> bool:
-    return _sensor_type(name, sensor_states) == wanted_type
 
 def _all_sensor_names(sensor_states: dict) -> list[str]:
     names = set()

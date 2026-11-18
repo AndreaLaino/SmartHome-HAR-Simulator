@@ -1,7 +1,5 @@
-import tkinter as tk
-from point import points
-from read import coordinates, read_doors
-from models import Point, Door
+from read import read_doors
+from models import Door
 from canvas_zoom import event_to_logical, to_canvas
 
 doors = []
@@ -32,57 +30,6 @@ def add_door_between_points(canvas, point1, point2, load_active, on_changed=None
     if callable(on_changed):
         on_changed()
     return door
-
-def draw_line_door(canvas, window, load_active, on_changed=None):
-    global doors
-    if load_active:
-        point = coordinates
-    else:
-        point = points
-
-    def draw_line():
-        point1 = point1_entry.get()
-        point2 = point2_entry.get()
-
-        # search for the coordinates of the points
-        coord_point1 = None
-        coord_point2 = None
-        for p_point in point:
-            p_name, p_x, p_y = p_point.name, p_point.x, p_point.y
-            
-            if p_name == point1:
-                coord_point1 = (p_x, p_y)
-            elif p_name == point2:
-                coord_point2 = (p_x, p_y)
-
-        if coord_point1 and coord_point2:
-            first = next(p for p in point if p.name == point1)
-            second = next(p for p in point if p.name == point2)
-            if add_door_between_points(
-                canvas,
-                first,
-                second,
-                load_active,
-                on_changed=on_changed,
-            ) is not None:
-                line_window.destroy()
-
-    # window for points name
-    line_window = tk.Toplevel(window)
-    line_window.title("Add door")
-
-    tk.Label(line_window, text="Door").pack()
-
-    tk.Label(line_window, text="Point 1:").pack()
-    point1_entry = tk.Entry(line_window)
-    point1_entry.pack()
-
-    tk.Label(line_window, text="Point 2:").pack()
-    point2_entry = tk.Entry(line_window)
-    point2_entry.pack()
-
-    # draw line button
-    tk.Button(line_window, text="Draw Line", command=draw_line).pack()
 
 
 def draw_door(canvas, door):

@@ -7,6 +7,7 @@ On Linux, run the opted-in suite under xvfb-run when no display is available.
 """
 
 import copy
+from io import BytesIO
 import os
 import sys
 import tempfile
@@ -14,9 +15,11 @@ import time
 import tkinter as tk
 import unittest
 from contextlib import ExitStack
+from datetime import timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
+from PIL import Image
 
 import device
 import door
@@ -37,10 +40,13 @@ from app.ui.device_inspector import (
     MapSelection, set_light_control, _append_pasted_object, _redraw_editable_objects,
     _set_selected_objects,
 )
-from models import Device, Sensor
+from models import Device, Door, Fixture, Point, Sensor, Wall
 from sim import interaction, render_simulation_state
-from canvas_zoom import to_canvas
+from canvas_zoom import set_zoom, to_canvas
+from har.catalogue import categories_for, default_catalogue
+from har import runtime as har_runtime, storage as har_storage
 from lighting import light_switch_position
+from utils import set_pir_fov_transparency, set_pir_fov_visibility
 
 
 GUI_ENABLED = os.environ.get("SIMULATOR_GUI_TESTS") == "1"
@@ -90,6 +96,8 @@ class TkSmokeTests(unittest.TestCase):
         self.stack.enter_context(patch("app.ui.bindings.autostart_bound_ip_loggers"))
         self.stack.enter_context(patch("app.ui.bindings.autostart_bound_gpio_loggers"))
         self.stack.enter_context(patch.object(sensor, "_load_sensor_map", return_value={}))
+        self.stack.enter_context(patch.object(device, "load_catalogue", return_value=default_catalogue()))
+        self.stack.enter_context(patch.object(har_storage, "DATA_DIR", self.root / "har_data"))
         # Fail immediately if a callback accidentally attempts an external call
         # or a dialog. Catch callback exceptions below because Tk reports them
         # instead of propagating them through Button.invoke().
@@ -156,6 +164,575 @@ class TkSmokeTests(unittest.TestCase):
         self.pump()
         self.assertTrue(self.ctx.canvas._show_grid)
         self.assertTrue(preferences.load_preferences(self.root / "settings.json")["show_grid"])
+
+    def test_activity_and_confidence_fit_the_panel_after_resizing(self):
+        from activity import _learned_activity_text
+
+        self.load_home()
+        self.window.geometry("1480x900")
+        self.window.deiconify()
+        self.ctx.simulation_menu.invoke("Manual")
+        self.pump()
+        label = self.ctx.activity_label
+        text = _learned_activity_text({
+            "status": "ready", "activities": ["cooking"], "confidence": .75,
+        })
+        self.assertEqual(text.splitlines(), [
+            "Activities (ML): cooking", "Model confidence: 75% (uncalibrated)",
+        ])
+        for panel_width in (420, 320):
+            self.ctx.activity_frame.master.configure(width=panel_width)
+            for result in (
+                {"status": "ready", "activities": ["cooking"], "confidence": .75},
+                {"status": "ready", "activities": ["cooking", "relaxing"], "confidence": .75},
+                {"status": "ready", "activities": ["eating", "relaxing"],
+                 "activity_confidences": {"eating": .8, "relaxing": .9}},
+                {"status": "partial", "activities": ["relaxing"], "abstained": True,
+                 "activity_confidences": {"eating": .52, "relaxing": .9}, "uncertain_activities": ["eating"]},
+                {"status": "uncertain", "activities": [], "abstained": True,
+                 "activity_confidences": {"eating": .52, "relaxing": .51}, "uncertain_activities": ["eating", "relaxing"]},
+                {"status": "no_model"},
+            ):
+                label.show_prediction(result)
+                self.pump()
+                self.assertGreater(label.winfo_width(), 1)
+                self.assertLessEqual(int(label.cget("wraplength")), label.winfo_width() - 8)
+                self.assertLessEqual(label.winfo_reqwidth(), label.winfo_width())
+                self.assertLessEqual(label.winfo_reqheight(), label.winfo_height())
+
+    def test_comparison_columns_fit_and_clear_on_model_change_and_reset(self):
+        from activity import reset_activity_display
+
+        self.load_home()
+        self.window.geometry("1480x900")
+        self.window.deiconify()
+        self.ctx.simulation_menu.invoke("Manual")
+        self.pump()
+        label = self.ctx.activity_label
+        rf = {"status": "partial", "activities": ["relaxing"], "abstained": True,
+              "activity_confidences": {"eating": .52, "relaxing": .9}, "uncertain_activities": ["eating"]}
+        gb = {"status": "ready", "activities": ["eating", "relaxing"],
+              "activity_confidences": {"eating": .8, "relaxing": .95}}
+        for panel_width in (420, 320):
+            self.ctx.activity_frame.master.configure(width=panel_width)
+            label.show_prediction({"comparisons": {"random_forest": rf, "gradient_boosting": gb}})
+            self.pump()
+            self.assertTrue(label.secondary.winfo_ismapped())
+            self.assertEqual([title.cget("text") for title in label.titles], ["Random Forest", "Gradient Boosting"])
+            self.assertLess(label.winfo_rootx(), label.secondary.winfo_rootx())
+            self.assertIn("Uncertain: eating", label.cget("text"))
+            self.assertIn("eating (80%)", label.secondary.cget("text"))
+            for widget in (label, label.secondary):
+                self.assertLessEqual(widget.winfo_reqwidth(), widget.winfo_width())
+                self.assertLessEqual(widget.winfo_reqheight(), widget.winfo_height())
+        reset_activity_display(label)
+        self.pump()
+        self.assertEqual(label.cget("text"), "Activity: None")
+        self.assertEqual(label.secondary.cget("text"), "Activity: None")
+        label.show_prediction({"status": "no_model"})
+        self.pump()
+        self.assertIn("no trained model", label.cget("text"))
+        self.assertIn("no trained model", label.secondary.cget("text"))
+        self.assertTrue(label.secondary.winfo_ismapped())
+        label.show_prediction(rf)
+        self.pump()
+        self.assertTrue(label.secondary.winfo_ismapped())
+        self.assertIn("Uncertain: eating", label.cget("text"))
+        self.assertIn("Activate the RF + Gradient Boosting comparison", label.secondary.cget("text"))
+        label.show_prediction({**gb, "algorithm": "gradient_boosting"})
+        self.pump()
+        self.assertIn("Activate the RF + Gradient Boosting comparison", label.cget("text"))
+        self.assertIn("eating (80%)", label.secondary.cget("text"))
+
+    def test_activity_results_keep_their_height_when_timer_space_is_limited(self):
+        self.load_home()
+        self.window.geometry("1480x720")
+        self.window.deiconify()
+        self.ctx.simulation_menu.invoke("Manual")
+        self.pump()
+        label = self.ctx.activity_label
+        # Larger fonts also exercise the wrapping needed on other platforms.
+        for widget in (label, label.secondary):
+            widget.configure(font=("Helvetica", 14))
+        result = {"status": "ready", "activities": ["eating", "relaxing"],
+                  "activity_confidences": {"eating": .8, "relaxing": .95}}
+        for panel_width in (420, 320):
+            with self.subTest(panel_width=panel_width):
+                panel = self.ctx.activity_frame
+                panel.master.configure(width=panel_width)
+                label.show_prediction({"comparisons": {"random_forest": result, "gradient_boosting": result}})
+                self.pump()
+                self.assertTrue(panel.winfo_ismapped())
+                for widget in (label, label.secondary):
+                    self.assertTrue(widget.winfo_ismapped())
+                    self.assertLessEqual(widget.winfo_reqwidth(), widget.winfo_width())
+                    self.assertLessEqual(widget.winfo_reqheight(), widget.winfo_height())
+                timer = self.ctx.timer_frame.master
+                self.assertTrue(timer.winfo_ismapped())
+                self.assertGreater(timer.winfo_height(), 0)
+                self.assertLessEqual(timer.winfo_y() + timer.winfo_height(), panel.winfo_y())
+                self.assertLessEqual(panel.winfo_y() + panel.winfo_height(), panel.master.winfo_height())
+
+    def test_manual_mode_displays_both_saved_algorithms_from_live_observations(self):
+        from har.demo import demo_sessions
+        from har.learning import train_comparison
+
+        self.load_home()
+        self.window.geometry("1480x900")
+        self.window.deiconify()
+        model = train_comparison(demo_sessions(sessions_per_house=3), "demo-source")
+        har_storage.save_model(model)
+        self.ctx.har_config["model_id"] = model["model_id"]
+        self.ctx.simulation_menu.invoke("Manual")
+        self.pump()
+        self.ctx.timer_app_instance.start_stop_button.invoke()
+        self.pump()
+        label = self.ctx.activity_label
+        predictions = self.ctx.house_state.activity_state()["har_prediction"]["comparisons"]
+        from activity import _learned_activity_text
+
+        self.assertEqual(label.cget("text"), _learned_activity_text(predictions["random_forest"]))
+        self.assertEqual(label.secondary.cget("text"), _learned_activity_text(predictions["gradient_boosting"]))
+        self.assertTrue(label.winfo_ismapped())
+        self.assertTrue(label.secondary.winfo_ismapped())
+        self.assertNotIn("No prediction", label.secondary.cget("text"))
+
+    def open_training_panel(self):
+        self.window.geometry("1480x900")
+        self.window.deiconify()
+        self.pump()
+        hat = self.ctx._tool_palette._buttons["learn"]
+        self.assertTrue(hasattr(hat, "_tool_icon_image"))
+        hat.event_generate("<Button-1>", x=17, y=17)
+        self.pump()
+        panel = self.ctx._training_panel
+        self.assertTrue(panel.frame.winfo_ismapped())
+        return panel, hat
+
+    def test_training_activities_scroll_over_buttons_without_changing_labels_or_map_zoom(self):
+        from canvas_zoom import get_zoom
+
+        self.load_home()
+        panel, hat = self.open_training_panel()
+        panel.activity_buttons["cooking"].invoke()
+        panel.new_activity.set("reading")
+        panel.add_activity()
+        self.pump()
+        selected = panel.selected_labels()
+        zoom = get_zoom(self.ctx.canvas)
+        delta = 1 if self.window.tk.call("tk", "windowingsystem") == "aqua" else 120
+
+        for widget in (panel.activity_canvas, panel.activity_grid, panel.no_activity_button,
+                       panel.activity_buttons["cooking"], panel.activity_buttons["reading"]):
+            with self.subTest(widget=widget):
+                panel.activity_canvas.yview_moveto(.3)
+                before = panel.activity_canvas.yview()[0]
+                widget.event_generate("<MouseWheel>", delta=-delta)
+                self.pump()
+                after = panel.activity_canvas.yview()[0]
+                self.assertGreater(after, before)
+                widget.event_generate("<MouseWheel>", delta=delta)
+                self.pump()
+                self.assertLess(panel.activity_canvas.yview()[0], after)
+                self.assertEqual(panel.selected_labels(), selected)
+                self.assertEqual(get_zoom(self.ctx.canvas), zoom)
+
+        before = panel.activity_canvas.yview()
+        panel.record_button.event_generate("<MouseWheel>", delta=-delta)
+        self.pump()
+        self.assertEqual(panel.activity_canvas.yview(), before)
+        hat.event_generate("<Button-1>", x=17, y=17)
+        hat.event_generate("<Button-1>", x=17, y=17)
+        self.pump()
+        before = panel.activity_canvas.yview()[0]
+        panel.activity_buttons["cooking"].event_generate("<MouseWheel>", delta=-delta)
+        self.pump()
+        self.assertGreater(panel.activity_canvas.yview()[0], before)
+
+    def test_training_activity_selection_uses_cyan_and_survives_theme_and_recording_sync(self):
+        from app.ui.theme import apply_theme_tree
+        from app.ui.training_panel import ACTIVITY_SELECTED_COLOR
+
+        self.load_home()
+        panel, hat = self.open_training_panel()
+        cooking = panel.activity_buttons["cooking"]
+        relaxing = panel.activity_buttons["relaxing"]
+        inactive = cooking.cget("background")
+        self.assertNotEqual(inactive, ACTIVITY_SELECTED_COLOR)
+        cooking.invoke()
+        relaxing.invoke()
+        for button in (cooking, relaxing):
+            self.assertEqual(button.cget("background"), ACTIVITY_SELECTED_COLOR)
+            self.assertEqual(button.cget("activebackground"), ACTIVITY_SELECTED_COLOR)
+            self.assertEqual(button.cget("selectcolor"), ACTIVITY_SELECTED_COLOR)
+            self.assertEqual(button.cget("foreground"), "#111827")
+        apply_theme_tree(self.ctx.home_frame, "light")
+        self.assertEqual(cooking.cget("background"), ACTIVITY_SELECTED_COLOR)
+        cooking.invoke()
+        self.assertEqual(cooking.cget("background"), inactive)
+        self.assertEqual(relaxing.cget("background"), ACTIVITY_SELECTED_COLOR)
+        panel.no_activity_button.invoke()
+        self.assertEqual(relaxing.cget("background"), inactive)
+        self.assertEqual(panel.no_activity_button.cget("background"), ACTIVITY_SELECTED_COLOR)
+
+        panel.new_activity.set("reading")
+        panel.add_activity()
+        panel.activity_buttons["reading"].invoke()
+        self.assertEqual(panel.activity_buttons["reading"].cget("background"), ACTIVITY_SELECTED_COLOR)
+        self.assertEqual(panel.no_activity_button.cget("background"), inactive)
+        panel.record_button.invoke()
+        har_runtime.set_recording_labels(self.ctx, ["cooking", "reading"])
+        panel.refresh()
+        self.assertEqual(cooking.cget("background"), ACTIVITY_SELECTED_COLOR)
+        self.assertEqual(panel.activity_buttons["reading"].cget("background"), ACTIVITY_SELECTED_COLOR)
+        hat.event_generate("<Button-1>", x=17, y=17)
+        hat.event_generate("<Button-1>", x=17, y=17)
+        self.pump()
+        self.assertEqual(cooking.cget("background"), ACTIVITY_SELECTED_COLOR)
+        panel.stop_button.invoke()
+
+    def test_training_panel_is_ready_before_first_display_and_reopening(self):
+        from app.ui import training_panel
+        from app.ui.theme import get_theme_palette
+
+        self.load_home()
+        preparing = []
+        first_display = []
+        original_load = training_panel.TrainingPanel.load_activities
+        original_theme = training_panel.apply_theme_tree
+
+        def load_activities(panel):
+            if not first_display:
+                def on_map(_event):
+                    first_display.append((
+                        panel.frame.cget("background"),
+                        panel.activity_canvas.cget("background"),
+                        panel.house_text.get(), panel.recording_text.get(),
+                        set(panel.activity_buttons),
+                    ))
+                panel.frame.bind("<Map>", on_map, add="+")
+            # Even if Tk redraws while preparing, the incomplete panel must stay hidden.
+            self.window.update_idletasks()
+            preparing.append(panel.frame.winfo_ismapped())
+            return original_load(panel)
+
+        def apply_theme(widget, *args, **kwargs):
+            if widget.master is self.ctx.canvas.master:
+                self.window.update_idletasks()
+                preparing.append(widget.winfo_ismapped())
+            return original_theme(widget, *args, **kwargs)
+
+        with patch.object(training_panel.TrainingPanel, "load_activities", load_activities), \
+                patch.object(training_panel, "apply_theme_tree", apply_theme):
+            panel, hat = self.open_training_panel()
+            hat.event_generate("<Button-1>", x=17, y=17)
+            self.pump()
+            self.assertFalse(panel.frame.winfo_ismapped())
+            hat.event_generate("<Button-1>", x=17, y=17)
+            self.pump()
+        self.assertEqual(preparing, [False, False, False])
+        self.assertEqual(len(first_display), 2)
+        palette = get_theme_palette("light")
+        for frame_bg, canvas_bg, house, recording, activities in first_display:
+            self.assertEqual(frame_bg, palette["background"])
+            self.assertEqual(canvas_bg, palette["background"])
+            self.assertEqual(house, "House: " + self.ctx.har_config["house_label"])
+            self.assertTrue(recording.startswith("Not recording"))
+            self.assertIn("cooking", activities)
+        self.assertTrue(panel.frame.winfo_ismapped())
+        self.assertIsNotNone(panel._poll_job)
+
+    def test_training_panel_reopening_keeps_solid_backgrounds_and_does_not_reset_styles(self):
+        from tkinter import ttk
+        from app.ui.theme import get_theme_palette
+
+        self.load_home()
+        panel, hat = self.open_training_panel()
+        background = get_theme_palette("light")["background"]
+        containers = (panel.frame, panel.record_button.master, panel.partition_combo.master,
+                      panel.activity_canvas.master, panel.activity_grid, panel.add_row)
+        for container in containers:
+            self.assertIn("background", container.keys())
+            self.assertEqual(container.cget("background"), background)
+        panel.activity_buttons["cooking"].invoke()
+        panel.record_button.invoke()
+        session_id = har_runtime.recording_status(self.ctx)["session_id"]
+        style_changes = []
+        original_configure = ttk.Style.configure
+
+        def configure_style(style, name, query_opt=None, **options):
+            if options:
+                style_changes.append(name)
+            return original_configure(style, name, query_opt, **options)
+
+        with patch.object(ttk.Style, "configure", configure_style):
+            for _ in range(5):
+                hat.event_generate("<Button-1>", x=17, y=17)
+                self.pump()
+                self.assertFalse(panel.frame.winfo_ismapped())
+                self.assertIsNone(panel._poll_job)
+                hat.event_generate("<Button-1>", x=17, y=17)
+                self.pump()
+                self.assertTrue(panel.frame.winfo_ismapped())
+                for container in containers:
+                    self.assertEqual(container.cget("background"), background)
+                self.assertEqual(panel.selected_labels(), ["cooking"])
+                self.assertEqual(har_runtime.recording_status(self.ctx)["session_id"], session_id)
+                self.assertIsNotNone(panel._poll_job)
+        self.assertEqual(style_changes, [])
+        panel.stop_button.invoke()
+
+    def test_training_panel_reopens_without_loading_recordings_or_models(self):
+        self.load_home()
+        har_storage.save_activity_names(["reading"])
+        panel, hat = self.open_training_panel()
+        self.assertIn("reading", panel.activity_buttons)
+        har_storage.register_activity_names(["custom from saved recording"])
+        with patch.object(har_storage, "list_sessions", side_effect=AssertionError("history scanned")), \
+                patch.object(har_storage, "list_models", side_effect=AssertionError("models loaded")):
+            hat.event_generate("<Button-1>", x=17, y=17)
+            self.pump()
+            hat.event_generate("<Button-1>", x=17, y=17)
+            self.pump()
+        self.assertTrue(panel.visible)
+        self.assertIn("custom from saved recording", panel.activity_buttons)
+        self.assertIn("cooking", panel.activity_buttons)
+        self.assertNotIn("history scanned", panel.status.get())
+        self.assertNotIn("models loaded", panel.status.get())
+
+    def test_training_hat_records_truth_saves_custom_names_and_preserves_failed_saves(self):
+        self.load_home()
+        panel, hat = self.open_training_panel()
+        self.assertEqual(set(panel.activity_buttons), {
+            "cooking", "eating", "relaxing", "sleeping", "working", "cleaning",
+            "laundry", "washing dishes", "using the bathroom", "showering",
+            "leaving home", "returning home",
+        })
+        panel.activity_canvas.yview_moveto(1)
+        self.pump()
+        last_button = panel.activity_buttons["returning home"]
+        self.assertGreaterEqual(last_button.winfo_rooty(), panel.activity_canvas.winfo_rooty())
+        self.assertLessEqual(
+            last_button.winfo_rooty() + last_button.winfo_height(),
+            panel.activity_canvas.winfo_rooty() + panel.activity_canvas.winfo_height(),
+        )
+        panel.activity_canvas.yview_moveto(0)
+        self.assertGreaterEqual(panel.frame.winfo_y(), self.ctx.canvas.winfo_y() + self.ctx.canvas.winfo_height())
+        self.assertGreater(self.ctx.canvas.winfo_height(), 180)
+        panel.no_activity_button.invoke()
+        panel.record_button.invoke()
+        timer = self.ctx.timer_app_instance
+        self.assertTrue(timer.is_running)
+        session = self.ctx.house_state.values["har_recording"]["session"]
+        self.assertEqual(session["partition"], "source")
+        self.assertEqual(session["frames"][0]["labels"], [])
+        self.assertEqual(str(panel.partition_combo.cget("state")), "disabled")
+        last_button.invoke()
+        timer.advance_button.invoke()
+        self.assertEqual(session["frames"][-1]["labels"], ["returning home"])
+        last_button.invoke()
+        panel.activity_buttons["cooking"].invoke()
+        panel.activity_buttons["relaxing"].invoke()
+        self.assertFalse(panel.no_activity.get())
+        timer.advance_button.invoke()
+        self.assertEqual(session["frames"][-1]["labels"], ["cooking", "relaxing"])
+        self.assertIn("no trained model", self.ctx.activity_label.cget("text"))
+        self.assertEqual(self.ctx.house_state.activity_state()["har_prediction"]["status"], "no_model")
+
+        panel.add_button.invoke()
+        panel.new_activity.set("reading")
+        panel.save_activity_button.invoke()
+        self.assertEqual(har_storage.load_activity_names(), ["reading"])
+        self.assertEqual(har_runtime.recording_status(self.ctx)["labels"], ["cooking", "relaxing"])
+        panel.activity_buttons["reading"].invoke()
+        timer.advance_button.invoke()
+        self.assertEqual(session["frames"][-1]["labels"], ["cooking", "reading", "relaxing"])
+
+        with patch.object(har_storage, "save_session", side_effect=OSError("disk full")):
+            panel.stop_button.invoke()
+        self.assertIn("disk full", panel.status.get())
+        self.assertTrue(har_runtime.recording_status(self.ctx)["recording"])
+        self.assertEqual(str(panel.stop_button.cget("state")), "normal")
+        identifier = session["session_id"]
+        hat.event_generate("<Button-1>", x=17, y=17)
+        self.pump()
+        self.assertFalse(panel.visible)
+        self.assertIsNone(panel._poll_job)
+        timer.advance_button.invoke()
+        hat.event_generate("<Button-1>", x=17, y=17)
+        self.pump()
+        self.assertTrue(panel.visible)
+        self.assertEqual(har_runtime.recording_status(self.ctx)["session_id"], identifier)
+        self.assertEqual(panel.selected_labels(), ["cooking", "reading", "relaxing"])
+        panel.stop_button.invoke()
+        saved, = har_storage.list_sessions()
+        self.assertEqual(saved["session_id"], identifier)
+        self.assertTrue(any(frame["labels"] == ["returning home"] for frame in saved["frames"]))
+        self.assertGreaterEqual(len(saved["frames"]), 45)
+        self.assertFalse(har_runtime.recording_status(self.ctx)["recording"])
+        self.assertTrue(timer.is_running)  # Stop & save affects recording, not the clock.
+
+    def test_training_record_resumes_existing_timer_and_starts_fresh_after_reset(self):
+        self.load_home()
+        self.ctx.simulation_menu.invoke("Manual")
+        timer = self.ctx.timer_app_instance
+        panel, _hat = self.open_training_panel()
+        panel.partition.set("Target (test)")
+        panel.activity_buttons["cooking"].invoke()
+        panel.record_button.invoke()
+        self.assertIs(self.ctx.timer_app_instance, timer)
+        self.assertTrue(timer.is_running)
+        first = self.ctx.house_state.values["har_recording"]["session"]
+        self.assertEqual(first["partition"], "target")
+        self.assertEqual(first["frames"][0]["labels"], ["cooking"])
+        timer.advance_button.invoke()
+        panel.stop_button.invoke()
+        elapsed = timer.elapsed_time
+        panel.record_button.invoke()
+        self.assertEqual(timer.elapsed_time, elapsed)
+        second = self.ctx.house_state.values["har_recording"]["session"]
+        self.assertEqual(second["simulation_session_id"], first["simulation_session_id"])
+        timer.advance_button.invoke()
+        timer.reset_button.invoke()
+        self.assertTrue(self.ctx._manual_reset_pending)
+        with self.assertRaisesRegex(ValueError, "Reset is finishing"):
+            panel.record()
+        self.assertFalse(har_runtime.recording_status(self.ctx)["recording"])
+        deadline = time.monotonic() + 2
+        while (self.ctx.timer_app_instance is not None or str(panel.record_button.cget("state")) != "normal") and time.monotonic() < deadline:
+            self.pump()
+            time.sleep(.02)
+        self.assertIsNone(self.ctx.timer_app_instance)
+        self.assertIsNone(panel.selected_labels())
+        self.assertEqual(panel.partition.get(), "Target (test)")
+        panel.activity_buttons["cooking"].invoke()
+        panel.record_button.invoke()
+        self.assertIsNot(self.ctx.timer_app_instance, timer)
+        self.assertTrue(self.ctx.timer_app_instance.is_running)
+        third = self.ctx.house_state.values["har_recording"]["session"]
+        self.assertNotEqual(third["simulation_session_id"], first["simulation_session_id"])
+        self.assertEqual(third["partition"], "target")
+        self.assertEqual(third["frames"][0]["labels"], ["cooking"])
+        panel.stop_button.invoke()
+        self.assertEqual(len(har_storage.list_sessions()), 3)
+
+    def test_training_panel_tracks_advanced_recording_house_change_and_shared_activity_names(self):
+        self.load_home()
+        har_storage.save_activity_names(["reading a very long book while sitting comfortably"])
+        panel, _hat = self.open_training_panel()
+        panel.models_button.invoke()
+        editor = self.ctx._learned_har_window
+        self.assertEqual(editor.tabs.select(), str(editor.train_tab))
+        self.ctx.simulation_menu.invoke("Manual")
+        editor.house_name.set("Source with custom activity")
+        editor.partition.set("target")
+        editor.start_button.invoke()
+        editor.labels.set("custom from advanced UI")
+        editor.apply_labels()
+        panel.refresh()
+        self.assertEqual(panel.selected_labels(), ["custom from advanced UI"])
+        self.assertEqual(panel.partition.get(), "Target (test)")
+        self.assertEqual(str(panel.record_button.cget("state")), "disabled")
+        self.ctx.timer_app_instance.start_stop_button.invoke()
+        self.ctx.timer_app_instance.advance_button.invoke()
+        old_id = self.ctx.har_config["house_id"]
+        self.load_home()  # This must save, close the old editor and detach the old timer.
+        panel.refresh()
+        self.assertNotEqual(self.ctx.har_config["house_id"], old_id)
+        self.assertIsNone(panel.selected_labels())
+        self.assertEqual(panel.partition.get(), "Source (training)")
+        self.assertIsNone(self.ctx._learned_har_window)
+        saved, = har_storage.list_sessions()
+        self.assertEqual(saved["frames"][-1]["labels"], ["custom from advanced UI"])
+        panel.frame.destroy()
+        self.assertIsNone(self.ctx._training_panel)
+        self.assertIsNone(panel._poll_job)
+        replacement, _hat = self.open_training_panel()
+        long_name = "reading a very long book while sitting comfortably"
+        self.assertIn(long_name, replacement.activity_buttons)
+        self.assertIn("custom from advanced UI", replacement.activity_buttons)
+        observed_columns = []
+        for geometry in ("1480x900", "720x800", "1480x900"):
+            self.window.geometry(geometry)
+            self.pump()
+            observed_columns.append(replacement._columns)
+            for button in [replacement.no_activity_button, *replacement.activity_buttons.values()]:
+                self.assertLessEqual(int(button.cget("wraplength")), button.winfo_width())
+                self.assertGreaterEqual(button.winfo_width(), 100)
+            hat = self.ctx._tool_palette._buttons["learn"]
+            self.assertLessEqual(hat.winfo_y() + hat.winfo_height(), hat.master.winfo_height())
+        self.assertLess(observed_columns[1], observed_columns[0])
+        self.assertEqual(observed_columns[2], observed_columns[0])
+
+    def test_pir_slider_preserves_real_alpha_zoom_and_image_lifecycle(self):
+        self.load_home()
+        # Tk dispatches Scale commands during display; exercise a mapped window.
+        self.window.geometry("1000x700")
+        self.window.deiconify()
+        self.pump()
+        canvas = self.ctx.canvas
+        menubar = self.window.nametowidget(self.window.cget("menu"))
+        settings = self.window.nametowidget(menubar.entrycget("Settings", "menu"))
+        settings.invoke("Show PIR fields of view")
+        settings.invoke("PIR transparency...")
+        self.pump()
+        dialog = next(child for child in self.window.winfo_children()
+                      if isinstance(child, tk.Toplevel) and child.title() == "PIR transparency")
+        slider = next(child for child in dialog.winfo_children() if isinstance(child, tk.Scale))
+        self.assertTrue(slider.winfo_ismapped())
+
+        def rendered_image():
+            item, = canvas.find_withtag("fov")
+            name = canvas.itemcget(item, "image")
+            data = canvas.tk.call(name, "data", "-format", "png")
+            return item, name, Image.open(BytesIO(data)).convert("RGBA")
+
+        first_item = rendered_image()[0]
+        for transparency, alpha in ((0, 255), (50, 128), (100, 0), (75, 64), (68, 82)):
+            previous_name = rendered_image()[1]
+            slider.set(transparency)
+            self.pump()
+            self.assertEqual(canvas._pir_fov_transparency, transparency)
+            item, _name, image = rendered_image()
+            left, top = canvas.coords(item)
+            self.assertEqual(item, first_item)
+            self.assertNotEqual(_name, previous_name)
+            self.assertNotIn(previous_name, canvas.tk.call("image", "names"))
+            self.assertEqual(image.getpixel((round(50 - left), round(100 - top)))[3], alpha)
+            if transparency == 100:
+                self.assertEqual(image.getchannel("A").getextrema(), (0, 0))
+        next(child for child in dialog.winfo_children()
+             if isinstance(child, tk.Button) and child.cget("text") == "Save").invoke()
+        self.pump()
+        self.assertEqual(preferences.load_preferences(self.root / "settings.json")["pir_fov_transparency"], 68)
+
+        _item, original_name, original_image = rendered_image()
+        set_zoom(canvas, 2.0, screen_x=0, screen_y=0)
+        self.pump()
+        item, zoomed_name, zoomed_image = rendered_image()
+        self.assertGreater(zoomed_image.width, original_image.width * 1.8)
+        self.assertNotIn(original_name, canvas.tk.call("image", "names"))
+        left, top = canvas.coords(item)
+        self.assertEqual(zoomed_image.getpixel((round(100 - left), round(200 - top)))[3], 82)
+        self.assertEqual((self.ctx.read_sensors[0].x, self.ctx.read_sensors[0].y), (50, 50))
+        far_pir = Sensor("far-pir", 1600, 1600, "PIR", 0, 1, 1, 0, direction=0)
+        set_pir_fov_visibility(canvas, [far_pir], True)
+        canvas._redraw_zoom_background()
+        set_pir_fov_transparency(canvas, 100)
+        set_zoom(canvas, 2.5, screen_x=0, screen_y=0)
+        set_pir_fov_transparency(canvas, 68)
+        self.pump()
+        grid = next(item for item in canvas.find_withtag("background_grid")
+                    if canvas.type(item) == "rectangle")
+        self.assertGreaterEqual(canvas.coords(grid)[2], canvas.bbox("fov")[2])
+        self.assertGreaterEqual(canvas.coords(grid)[3], canvas.bbox("fov")[3])
+        final_name = rendered_image()[1]
+        settings.invoke("Show PIR fields of view")
+        self.pump()
+        self.assertEqual(canvas.find_withtag("fov"), ())
+        self.assertEqual(canvas._pir_fov_images, {})
+        self.assertNotIn(zoomed_name, canvas.tk.call("image", "names"))
+        self.assertNotIn(final_name, canvas.tk.call("image", "names"))
 
     def test_scenario_load_renders_real_canvas_items_and_survives_save_reload(self):
         path = self.load_home()
@@ -253,6 +830,63 @@ class TkSmokeTests(unittest.TestCase):
         self.pump()
         self.assertEqual(alive, [True])
         self.window.withdraw()
+
+    def test_new_menu_returns_before_opening_the_confirmation(self):
+        with patch("app.ui.main_ui.delete_scenario") as new:
+            self.ctx.file_menu.invoke("New")
+            new.assert_not_called()
+            self.pump()
+            new.assert_called_once_with(self.ctx, self.ctx.canvas)
+
+    def test_new_menu_confirmation_preserves_or_clears_the_home(self):
+        self.window.deiconify()
+        self.pump()
+        for answer in ("No", "Yes"):
+            with self.subTest(answer=answer):
+                path = self.load_home()
+                previous_devices = self.ctx.read_devices[:]
+                previous_house_id = self.ctx.har_config["house_id"]
+                answered = []
+
+                def respond():
+                    for dialog in self.window.winfo_children():
+                        if not isinstance(dialog, tk.Toplevel) or dialog.title() != "Clear current home":
+                            continue
+                        children = dialog.winfo_children()
+                        while children:
+                            widget = children.pop()
+                            children.extend(widget.winfo_children())
+                            if isinstance(widget, tk.Button) and widget.cget("text") == answer:
+                                answered.append(answer)
+                                widget.invoke()
+                                return
+
+                def dismiss_if_stuck():
+                    for dialog in self.window.winfo_children():
+                        if isinstance(dialog, tk.Toplevel) and dialog.title() == "Clear current home":
+                            dialog.destroy()
+
+                self.window.after(50, respond)
+                watchdog = self.window.after(2000, dismiss_if_stuck)
+                try:
+                    self.ctx.file_menu.invoke("New")
+                    self.pump()
+                finally:
+                    self.window.after_cancel(watchdog)
+                self.assertEqual(answered, [answer])
+                self.assertTrue(self.window.winfo_exists())
+                self.assertTrue(path.is_file())
+                if answer == "No":
+                    self.assertEqual(self.ctx.read_devices, previous_devices)
+                    self.assertEqual(self.ctx.current_file, str(path))
+                    self.assertEqual(self.ctx.har_config["house_id"], previous_house_id)
+                else:
+                    self.assertTrue(all(not objects for objects in (
+                        self.ctx.r_points, self.ctx.read_walls, self.ctx.read_sensors,
+                        self.ctx.read_devices, self.ctx.read_doors, self.ctx.rooms,
+                    )))
+                    self.assertIsNone(self.ctx.current_file)
+                    self.assertNotEqual(self.ctx.har_config["house_id"], previous_house_id)
 
     def test_save_menu_actions_return_before_opening_modal_windows(self):
         # A direct Menu.invoke() alone misses the macOS menu-tracking loop.
@@ -373,6 +1007,10 @@ class TkSmokeTests(unittest.TestCase):
         self.assertIn("Smart Light", dialog.device_type["values"])
         self.assertEqual(dialog.lighting_power.get(), "10")
         self.assertEqual(dialog.lighting_power.winfo_manager(), "")
+        dialog.device_category.set("Device_Lighting")
+        dialog.device_category.event_generate("<<ComboboxSelected>>")
+        self.pump()
+        self.assertEqual(dialog.device_type["values"], ("Normal Light", "Smart Light"))
         dialog.device_type.set("Normal Light")
         dialog.device_type.event_generate("<<ComboboxSelected>>")
         self.pump()
@@ -389,13 +1027,526 @@ class TkSmokeTests(unittest.TestCase):
         dialog.device_name.insert(0, "automatic light")
         self.assertTrue(dialog.validate())
         dialog.apply()
-        self.assertEqual(dialog.result[-1], "automatic")
-        dialog.device_type.set("Oven")
-        dialog.device_type.event_generate("<<ComboboxSelected>>")
+        self.assertEqual(dialog.result[5], "automatic")
+        self.assertIsNone(dialog.result[6])
+        dialog.device_category.set("Device_Cooking")
+        dialog.device_category.event_generate("<<ComboboxSelected>>")
         self.pump()
+        self.assertEqual(dialog.device_type.get(), "Oven")
         self.assertEqual(dialog.lighting_power.winfo_manager(), "")
         self.assertEqual(dialog.lighting_control.winfo_manager(), "")
+        dialog.device_category.set("Device_Lighting")
+        dialog.device_category.event_generate("<<ComboboxSelected>>")
+        self.pump()
+        self.assertEqual(dialog.lighting_power.winfo_manager(), "grid")
+        self.assertEqual(dialog.lighting_control.get(), "Automatic")
+        self.assertEqual(dialog.lighting_power.get(), "10")
         frame.destroy()
+
+    def test_device_category_filters_choices_without_restricting_created_device_roles(self):
+        frame = tk.Frame(self.window)
+        dialog = device.DeviceDialog.__new__(device.DeviceDialog)
+        dialog.body(frame)
+        self.assertEqual(dialog.device_category.get(), "All devices")
+        self.assertEqual(dialog.device_type["values"], device.DEVICE_TYPES)
+        dialog.device_category.set("Device_Cooking")
+        dialog.device_category.event_generate("<<ComboboxSelected>>")
+        self.pump()
+        self.assertEqual(dialog.device_type["values"], ("Oven", "Microwave", "Toaster"))
+        dialog.device_type.set("Microwave")
+        dialog.device_category.set("All devices")
+        dialog.device_category.event_generate("<<ComboboxSelected>>")
+        self.pump()
+        self.assertEqual(dialog.device_type["values"], device.DEVICE_TYPES)
+        self.assertEqual(dialog.device_type.get(), "Microwave")
+        for category in ("Device_Computer", "Device_Entertainment"):
+            dialog.device_category.set(category)
+            dialog.device_category.event_generate("<<ComboboxSelected>>")
+            self.pump()
+            self.assertEqual(dialog.device_type.get(), "Computer")
+        self.assertIn("TV", dialog.device_type["values"])
+        self.assertIn("PlayStation", dialog.device_type["values"])
+        dialog.device_name.insert(0, "computer added through Entertainment")
+        self.assertTrue(dialog.validate())
+        dialog.apply()
+        with patch.object(device, "DeviceDialog", return_value=dialog), \
+                patch.object(device, "event_to_logical", return_value=(100, 100)), \
+                patch.object(device, "draw_device"):
+            self.assertTrue(device.add_device(self.ctx.canvas, object(), False))
+        created = device.devices[-1]
+        self.assertEqual(created.type, "Computer")
+        self.assertIsNone(created.categories)
+        self.assertEqual(categories_for(created, "device", default_catalogue()), [
+            "Device_Computer", "Device_Entertainment",
+        ])
+        frame.destroy()
+
+    def test_door_tool_replaces_the_wall_on_the_zoomed_map_and_undo_restores_it(self):
+        self.load_home()
+        self.window.geometry("1200x800")
+        self.window.deiconify()
+        self.pump()
+        canvas = self.ctx.canvas
+        original = next(w for w in self.ctx.read_walls if w.x1 == w.x2 == 200)
+        old_doors = self.ctx.read_doors[:]
+        set_zoom(canvas, 1.5, screen_x=0, screen_y=0)
+        self.ctx._tool_palette._buttons["door"].event_generate("<Button-1>", x=17, y=17)
+        for x, y in ((200, 75), (200, 125)):
+            x, y = to_canvas(canvas, x, y)
+            canvas.event_generate("<Button-1>", x=round(x - canvas.canvasx(0)), y=round(y - canvas.canvasy(0)))
+            self.pump()
+        self.ctx._cancel_canvas_action()
+        self.pump()
+        self.assertEqual(len(self.ctx.read_doors), len(old_doors) + 1)
+        door = self.ctx.read_doors[-1]
+        self.assertEqual((door.x1, door.y1, door.x2, door.y2), (200, 75, 200, 125))
+        self.assertNotIn(original, self.ctx.read_walls)
+        self.assertIn(Wall(200, 0, 200, 75), self.ctx.read_walls)
+        self.assertIn(Wall(200, 125, 200, 200), self.ctx.read_walls)
+        self.assertNotIn(list((*to_canvas(canvas, 200, 0), *to_canvas(canvas, 200, 200))),
+                         [canvas.coords(item) for item in canvas.find_withtag("wall")])
+        self.assertEqual(len(self.ctx.rooms), 1)
+        inspector.undo_last_movement(self.ctx)
+        self.pump()
+        self.assertIn(original, self.ctx.read_walls)
+        self.assertEqual(self.ctx.read_doors, old_doors)
+        inspector.redo_last_movement(self.ctx)
+        self.pump()
+        self.assertIs(self.ctx.read_doors[-1], door)
+        self.assertNotIn(original, self.ctx.read_walls)
+
+    def test_sensor_visibility_is_independent_of_pir_and_keeps_observations(self):
+        from utils import draw_sensor, update_sensor_color
+
+        self.load_home()
+        canvas = self.ctx.canvas
+        fixture = Fixture("bed", 100, 150, "Bed")
+        self.ctx.read_devices.append(fixture)
+        weight = sensor.create_associated_sensor(fixture, "Weight", self.ctx.read_sensors, self.ctx.rooms)
+        self.ctx.read_sensors.append(weight)
+        meter = sensor.create_associated_sensor(self.ctx.read_devices[0], "Smart Meter", self.ctx.read_sensors, self.ctx.rooms)
+        meter.consumption = 12.5
+        self.ctx.read_sensors.append(meter)
+        inspector._redraw_editable_objects(self.ctx)
+        menubar = self.window.nametowidget(self.window.cget("menu"))
+        settings = self.window.nametowidget(menubar.entrycget("Settings", "menu"))
+        ordinary = self.window.nametowidget(settings.entrycget("Sensors", "menu"))
+        pirs = self.window.nametowidget(settings.entrycget("PIR sensors", "menu"))
+        settings.invoke("Show PIR fields of view")
+        self.pump()
+        sources = {"devices": self.ctx.read_devices, "sensors": self.ctx.read_sensors, "rooms": self.ctx.rooms}
+        before = har_runtime.capture_frame({}, sources, 0, default_catalogue())
+
+        def state(name, part):
+            return canvas.itemcget(canvas.find_withtag(f"{name}_{part}_sensor")[0], "state")
+
+        ordinary.invoke("Markers only")
+        self.pump()
+        self.assertEqual((state(weight.name, "rect"), state(weight.name, "text")), ("normal", "hidden"))
+        self.assertEqual(state("motion", "text"), "normal")
+        ordinary.invoke("Hidden")
+        self.pump()
+        self.assertEqual(state(weight.name, "rect"), "hidden")
+        self.assertEqual(state(meter.name, "rect"), "hidden")
+        self.assertEqual(state("motion", "rect"), "normal")
+        self.assertTrue(canvas.find_withtag("fov"))
+        pirs.invoke("Markers only")
+        self.pump()
+        self.assertEqual((state("motion", "rect"), state("motion", "text")), ("normal", "hidden"))
+        self.assertTrue(canvas.find_withtag("fov"))
+        pirs.invoke("Hidden")
+        self.pump()
+        self.assertEqual(state("motion", "rect"), "hidden")
+        self.assertTrue(canvas.find_withtag("fov"))
+        self.assertTrue(canvas._show_pir_fov)  # Preserve the independent overlay choice.
+        update_sensor_color(canvas, meter.name, 100, 0)
+        self.assertEqual(state(meter.name, "rect"), "hidden")
+        self.assertEqual(canvas.itemcget(f"{meter.name}_rect_sensor", "fill"), "green")
+        extra = sensor.create_associated_sensor(fixture, "Weight", self.ctx.read_sensors, self.ctx.rooms)
+        draw_sensor(canvas, extra)
+        self.assertEqual((state(extra.name, "rect"), state(extra.name, "text")), ("hidden", "hidden"))
+        self.assertFalse(any(selection.kind == "sensor" for selection in
+                             inspector._selections_in_rectangle(self.ctx, 0, 0, 200, 200)))
+        inspector._redraw_editable_objects(self.ctx)
+        self.pump()
+        self.assertEqual(state(weight.name, "rect"), "hidden")
+        self.assertEqual(state("motion", "rect"), "hidden")
+        self.assertEqual(before, har_runtime.capture_frame({}, sources, 0, default_catalogue()))
+        ordinary.invoke("With names")
+        self.pump()
+        self.assertEqual(state(weight.name, "text"), "normal")
+        self.assertEqual(state("motion", "rect"), "hidden")
+        pirs.invoke("With names")
+        self.pump()
+        self.assertEqual(state("motion", "text"), "normal")
+        self.assertTrue(canvas.find_withtag("fov"))
+        ordinary.invoke("Markers only")
+        pirs.invoke("Hidden")
+        self.pump()
+        saved = preferences.load_preferences(self.root / "settings.json")
+        self.assertEqual((saved["sensor_visibility"], saved["pir_visibility"]), ("markers", "hidden"))
+        self.load_home()
+        self.assertEqual(state("motion", "rect"), "hidden")
+        self.assertTrue(canvas.find_withtag("fov"))
+
+    def test_associated_meter_visibility_follows_menu_values_and_survives_redraw(self):
+        from app.ui import main_ui
+
+        self.load_home()
+        canvas = self.ctx.canvas
+        menubar = self.window.nametowidget(self.window.cget("menu"))
+        settings = self.window.nametowidget(menubar.entrycget("Settings", "menu"))
+        ordinary = self.window.nametowidget(settings.entrycget("Sensors", "menu"))
+        pirs = self.window.nametowidget(settings.entrycget("PIR sensors", "menu"))
+        with patch.object(main_ui, "begin_placement_mode") as begin:
+            main_ui._menu_add_device(self.ctx)
+        create_at_click = begin.call_args.args[2]
+
+        def create_meter(name):
+            dialog = SimpleNamespace(result=(name, "Oven", 2000, 1500, 2000, "manual", "Smart Meter"))
+            with patch.object(device, "DeviceDialog", return_value=dialog):
+                self.assertTrue(create_at_click(SimpleNamespace(x=130, y=130)))
+            return next(s for s in self.ctx.read_sensors if s.associated_device == name)
+
+        meter = create_meter("first_oven")
+
+        def states(sensor):
+            return tuple(canvas.itemcget(f"{sensor.name}_{part}_sensor", "state") for part in ("rect", "text"))
+
+        for mode, expected in (("markers", ("normal", "hidden")), ("hidden", ("hidden", "hidden"))):
+            ordinary._visibility_variable.set(mode)
+            self.pump()
+            self.assertEqual(states(meter), expected)
+            self.assertEqual(self.ctx.preferences["sensor_visibility"], mode)
+        second_meter = create_meter("second_oven")
+        self.assertEqual(states(second_meter), ("hidden", "hidden"))
+        inspector._redraw_editable_objects(self.ctx)
+        self.assertEqual(states(meter), ("hidden", "hidden"))
+        self.assertEqual(states(second_meter), ("hidden", "hidden"))
+        pirs._visibility_variable.set("hidden")
+        settings._show_pir_fov_variable.set(True)
+        self.pump()
+        self.assertEqual(states(self.ctx.read_sensors[0]), ("hidden", "hidden"))
+        self.assertTrue(canvas.find_withtag("fov"))
+        settings._show_pir_fov_variable.set(False)
+        self.pump()
+        self.assertFalse(canvas.find_withtag("fov"))
+        ordinary._visibility_variable.set("full")
+        self.assertEqual(states(meter), ("normal", "normal"))
+        self.assertEqual(states(second_meter), ("normal", "normal"))
+
+    def test_door_drag_and_endpoint_cleanup_keep_visible_geometry_and_history_connected(self):
+        self.load_home()
+        a, b = Point("a", 50, 50), Point("b", 150, 50)
+        c, d = Point("c", 150, 150), Point("d", 50, 150)
+        standalone = Point("standalone", 200, 200)
+        left, right = Wall(50, 50, 50, 150), Wall(150, 50, 150, 150)
+        door = Door(50, 50, 150, 50, "close")
+        self.ctx.r_points[:] = [a, b, c, d, standalone]
+        self.ctx.read_walls[:] = [left, right]
+        read.read_walls_coordinates[:] = [left, right]
+        self.ctx.read_doors[:] = [door]
+        self.ctx.read_sensors.clear()
+        self.ctx.read_devices.clear()
+        _redraw_editable_objects(self.ctx)
+        self.window.geometry("1000x700")
+        self.window.deiconify()
+        self.pump()
+        canvas = self.ctx.canvas
+
+        def event_at(x, y):
+            x, y = to_canvas(canvas, x, y)
+            return SimpleNamespace(x=x - canvas.canvasx(0), y=y - canvas.canvasy(0))
+
+        def drawn_point_positions():
+            positions = set()
+            for marker in canvas.find_withtag("point"):
+                x1, y1, x2, y2 = canvas.coords(marker)
+                positions.add(((x1 + x2) / 2, (y1 + y2) / 2))
+            return positions
+
+        inspector.begin_selection_drag(self.ctx, event_at(100, 50))
+        self.assertIs(self.ctx._selected_object.value, door)
+        inspector.drag_selected_object(self.ctx, event_at(125, 75))
+        self.assertEqual((a.x, a.y, b.x, b.y), (50, 50, 150, 50))
+        inspector.finish_selection_drag(self.ctx, event_at(125, 75))
+        self.pump()
+        self.assertEqual((a.x, a.y, b.x, b.y), (75, 75, 175, 75))
+        self.assertEqual((door.x1, door.y1, door.x2, door.y2), (75, 75, 175, 75))
+        self.assertEqual((left.x1, left.y1, right.x1, right.y1), (75, 75, 175, 75))
+        self.assertIn(to_canvas(canvas, a.x, a.y), drawn_point_positions())
+        self.assertIn(to_canvas(canvas, b.x, b.y), drawn_point_positions())
+        self.assertNotIn(to_canvas(canvas, 50, 50), drawn_point_positions())
+        self.assertEqual(tuple(canvas.coords(canvas.find_withtag("door")[0])),
+                         (*to_canvas(canvas, a.x, a.y), *to_canvas(canvas, b.x, b.y)))
+        inspector.undo_last_movement(self.ctx)
+        self.assertEqual((a.x, a.y, b.x, b.y), (50, 50, 150, 50))
+        inspector.redo_last_movement(self.ctx)
+        self.assertEqual((a.x, a.y, b.x, b.y), (75, 75, 175, 75))
+
+        inspector.delete_map_selection(self.ctx, MapSelection("door", door), confirm=False)
+        self.assertIn(a, self.ctx.r_points)
+        self.assertIn(b, self.ctx.r_points)
+        inspector.delete_map_selection(self.ctx, MapSelection("wall", left), confirm=False)
+        self.assertNotIn(a, self.ctx.r_points)
+        self.assertNotIn(d, self.ctx.r_points)
+        self.assertNotIn(to_canvas(canvas, a.x, a.y), drawn_point_positions())
+        self.assertIn(b, self.ctx.r_points)
+        self.assertIn(standalone, self.ctx.r_points)
+        inspector.undo_last_movement(self.ctx)
+        self.assertIs(self.ctx.r_points[0], a)
+        self.assertIn(to_canvas(canvas, a.x, a.y), drawn_point_positions())
+        inspector.undo_last_movement(self.ctx)
+        self.assertIs(self.ctx.read_doors[0], door)
+        self.assertEqual(self.ctx.r_points, [a, b, c, d, standalone])
+
+        path = self.root / "connected-door.csv"
+        with patch.object(scenario.messagebox, "showinfo"):
+            self.assertTrue(scenario._write_scenario(self.ctx, path))
+        self.assertTrue(scenario.load_scenario_from_path(self.ctx, canvas, path))
+        self.pump()
+        self.assertEqual([(p.name, p.x, p.y) for p in self.ctx.r_points],
+                         [(p.name, p.x, p.y) for p in (a, b, c, d, standalone)])
+        self.assertEqual(self.ctx.read_walls, [left, right])
+        self.assertEqual(self.ctx.read_doors, [door])
+
+    def test_fixture_dialog_creates_an_independent_sensor_and_supports_undo_redo(self):
+        from app.ui.main_ui import _menu_add_device
+
+        self.load_home()
+        self.window.geometry("1000x700")
+        self.window.deiconify()
+        self.pump()
+        frame = tk.Frame(self.window)
+        dialog = device.DeviceDialog.__new__(device.DeviceDialog)
+        dialog.body(frame)
+        dialog.object_kind.set("Non-electrical object")
+        dialog.object_kind.event_generate("<<ComboboxSelected>>")
+        self.pump()
+        self.assertEqual(dialog.device_type["values"], device.FIXTURE_TYPES)
+        self.assertNotIn("Device_Cooking", dialog.device_category["values"])
+        dialog.device_category.set("Device_Toilet")
+        dialog.device_category.event_generate("<<ComboboxSelected>>")
+        self.pump()
+        self.assertEqual(dialog.device_type.get(), "Toilet")
+        self.assertEqual(dialog.lighting_power.winfo_manager(), "")
+        dialog.add_sensor_checkbox.invoke()
+        self.assertEqual(dialog.sensor_type.get(), "Weight")
+        self.assertNotIn("Smart Meter", dialog.sensor_type["values"])
+        self.assertEqual(dialog.sensor_type.winfo_manager(), "grid")
+        dialog.device_name.insert(0, "wc")
+        self.assertTrue(dialog.validate())
+        dialog.apply()
+
+        _menu_add_device(self.ctx)
+        with patch.object(device, "DeviceDialog", return_value=dialog):
+            self.ctx.canvas.event_generate("<Button-1>", x=130, y=130)
+            self.pump()
+        obj = next(obj for obj in self.ctx.read_devices if obj.name == "wc")
+        linked = next(s for s in self.ctx.read_sensors if s.associated_device == obj.name)
+        self.assertIsInstance(obj, Fixture)
+        self.assertFalse(linked.integrated)
+        self.assertTrue(self.ctx.canvas.find_withtag(f"{linked.name}_rect_sensor"))
+        self.assertNotEqual((obj.x, obj.y), (linked.x, linked.y))
+        inspector.undo_last_movement(self.ctx)
+        self.assertNotIn(obj, self.ctx.read_devices)
+        self.assertNotIn(linked, self.ctx.read_sensors)
+        inspector.redo_last_movement(self.ctx)
+        self.assertIn(obj, self.ctx.read_devices)
+        self.assertIn(linked, self.ctx.read_sensors)
+        self.assertEqual(linked.associated_device, obj.name)
+
+        inspector.activate_select_mode(self.ctx)
+        inspector.clear_selection(self.ctx)
+
+        def event_at(x, y):
+            x, y = to_canvas(self.ctx.canvas, x, y)
+            return SimpleNamespace(x=x - self.ctx.canvas.canvasx(0), y=y - self.ctx.canvas.canvasy(0))
+
+        original = (obj.x, obj.y)
+        start = (linked.x, linked.y)
+        inspector.begin_selection_drag(self.ctx, event_at(*start))
+        self.assertIs(self.ctx._selected_object.value, linked)
+        inspector.drag_selected_object(self.ctx, event_at(start[0] + 30, start[1] + 30))
+        inspector.finish_selection_drag(self.ctx, event_at(start[0] + 30, start[1] + 30))
+        self.assertEqual((obj.x, obj.y), original)
+        self.assertNotEqual((linked.x, linked.y), start)
+        self.assertEqual(linked.associated_device, obj.name)
+        frame.destroy()
+
+    def test_sensor_dialog_links_weight_to_fixtures_and_meters_only_to_electrical_devices(self):
+        self.load_home()
+        self.ctx.read_devices.extend([Fixture("wc", 100, 130, "Toilet"),
+                                      Device("lamp", 140, 140, "Smart Light", 10, 0, 10, 10)])
+        frame = tk.Frame(self.window)
+        dialog = sensor.SensorDialog.__new__(sensor.SensorDialog)
+        dialog._preloaded_device_names = []
+        dialog.body(frame)
+        dialog.sensor_type.set("Weight")
+        dialog.sensor_type.event_generate("<<ComboboxSelected>>")
+        self.pump()
+        self.assertIn("wc", dialog.associated_device_combobox["values"])
+        self.assertEqual(dialog.associated_device_combobox.get(), "None")
+        dialog.associated_device_combobox.set("wc")
+        dialog.sensor_name.insert(0, "occupancy")
+        self.assertTrue(dialog.validate())
+        dialog.apply()
+        self.assertEqual(dialog.result[-1], "wc")
+        dialog.sensor_type.set("Smart Meter")
+        dialog.sensor_type.event_generate("<<ComboboxSelected>>")
+        self.pump()
+        self.assertIn("oven", dialog.associated_device_combobox["values"])
+        self.assertNotIn("wc", dialog.associated_device_combobox["values"])
+        self.assertNotIn("lamp", dialog.associated_device_combobox["values"])
+        frame.destroy()
+
+    def test_fixture_occupancy_and_external_meter_do_not_interrupt_advance_or_recording(self):
+        self.load_home()
+        obj = Fixture("wc", 100, 130, "Toilet")
+        linked = sensor.create_associated_sensor(obj, "Weight", self.ctx.read_sensors, self.ctx.rooms)
+        oven = self.ctx.read_devices[0]
+        meter = sensor.create_associated_sensor(oven, "Smart Meter", [*self.ctx.read_sensors, linked], self.ctx.rooms)
+        self.ctx.read_devices.append(obj)
+        self.ctx.read_sensors.extend([linked, meter])
+        _redraw_editable_objects(self.ctx)
+        self.ctx.simulation_menu.invoke("Manual")
+        timer = self.ctx.timer_app_instance
+        session = har_runtime.start_recording(self.ctx)
+        har_runtime.set_recording_labels(self.ctx, ["using the bathroom"])
+        timer.start_stop_button.invoke()
+        self.pump()
+        x, y = to_canvas(self.ctx.canvas, obj.x, obj.y)
+        interaction(self.ctx.canvas, timer,
+                    SimpleNamespace(x=x - self.ctx.canvas.canvasx(0), y=y - self.ctx.canvas.canvasy(0)),
+                    self.ctx.activity_label, self.ctx.house_state, self.ctx._manual_runtime_sources)
+        self.assertEqual((obj.state, linked.state), (1, 1))
+        timer.advance_button.invoke()
+        self.pump()
+        self.assertEqual(timer.get_simulated_time(), "00:15")
+        self.assertEqual(session["frames"][-1]["time_seconds"], 900)
+        saved_obj = next(item for item in session["frames"][-1]["devices"] if item["name"] == "wc")
+        self.assertNotIn("power", saved_obj)
+        self.assertNotIn("current_consumption", saved_obj)
+        self.assertEqual(session["frames"][-1]["sensor_states"][linked.name]["state"], [1])
+        har_runtime.finish_recording(self.ctx.house_state)
+        path = self.root / "fixtures.csv"
+        with patch.object(scenario.messagebox, "showinfo"):
+            self.assertTrue(scenario._write_scenario(self.ctx, path))
+        self.assertIn("Fixtures", path.read_text(encoding="utf-8"))
+
+    def test_recording_freezes_pir_object_coverage_and_door_visibility(self):
+        import json
+
+        from activity import process_activities
+        from har.runtime import start_recording, finish_recording
+
+        self.load_home()
+        self.ctx.read_devices[:] = [Device("oven", 80, 100, "Oven", 1000, 0, 0, 1000),
+                                    Fixture("sofa", 160, 100, "Sofa")]
+        self.ctx.read_sensors[:] = [Sensor("left", 100, 100, "PIR", 0, 1, 1, 0, direction=180),
+                                    Sensor("right", 140, 100, "PIR", 0, 1, 1, 0, direction=0)]
+        _redraw_editable_objects(self.ctx)
+        self.ctx.simulation_menu.invoke("Manual")
+        self.pump()
+        session = start_recording(self.ctx, "source")
+        timer = self.ctx.timer_app_instance
+        timer.start_stop_button.invoke()
+        self.pump()
+        runtime = self.ctx._manual_runtime_sources
+
+        def observe():
+            timer.elapsed_time += timedelta(seconds=1)
+            process_activities(self.ctx.activity_label, timer, self.ctx.house_state.sensor_states(),
+                               self.ctx.house_state, runtime)
+            return session["frames"][-1]["pir_context"]["coverage"]
+
+        self.assertEqual(observe(), {"left": ["Device_Cooking"], "right": ["Device_Seating"]})
+        closed_door = Door(150, 50, 150, 150, "close")
+        runtime["doors"].append(closed_door)
+        self.assertEqual(observe(), {"left": ["Device_Cooking"], "right": []})
+        closed_snapshot = copy.deepcopy(session["frames"][-1])
+        closed_door.state = "open"
+        self.assertEqual(observe(), {"left": ["Device_Cooking"], "right": ["Device_Seating"]})
+        path = finish_recording(self.ctx.house_state)
+        saved = har_storage.read_json(path)
+        self.assertIn(json.loads(json.dumps(closed_snapshot)), saved["frames"])
+        self.assertEqual(saved["frames"][-1]["pir_context"]["coverage"]["right"], ["Device_Seating"])
+
+    def test_target_model_records_full_advances_and_restarts_recording_after_reset(self):
+        from app.ui.learned_har import LearnedHARWindow
+        from har import storage
+        from har.demo import demo_sessions
+        from har.learning import train_source
+        from har.runtime import recording_status
+
+        self.load_home()
+        self.ctx.read_devices[:] = [
+            Device("microwave", 100, 100, "Microwave", 1000, 0, 1000, 1000),
+            Device("tv", 150, 100, "TV", 100, 0, 100, 100),
+        ]
+        self.ctx.read_sensors.extend(
+            Sensor(f"meter_{item.name}", item.x, item.y, "Smart Meter", 0, 2000, 1, 0,
+                   associated_device=item.name) for item in self.ctx.read_devices
+        )
+        _redraw_editable_objects(self.ctx)
+
+        def click_device(appliance):
+            x, y = to_canvas(self.ctx.canvas, appliance.x, appliance.y)
+            event = SimpleNamespace(x=x - self.ctx.canvas.canvasx(0), y=y - self.ctx.canvas.canvasy(0))
+            interaction(self.ctx.canvas, self.ctx.timer_app_instance, event, self.ctx.activity_label,
+                        self.ctx.house_state, self.ctx._manual_runtime_sources)
+
+        with patch.object(storage, "DATA_DIR", self.root / "har_data"):
+            model = train_source(demo_sessions(sessions_per_house=3), "demo-source")
+            storage.save_model(model)
+            ui = LearnedHARWindow(self.ctx)
+            try:
+                ui.house_name.set("Target house")
+                ui.partition.set("target")
+                ui.activate_button.invoke()
+                self.assertEqual(self.ctx.har_config["model_id"], model["model_id"])
+                for _run in range(2):
+                    self.ctx.simulation_menu.invoke("Manual")
+                    self.pump()
+                    timer = self.ctx.timer_app_instance
+                    ui.start_button.invoke()
+                    self.assertTrue(recording_status(self.ctx)["recording"])
+                    ui.labels.set("cooking")
+                    ui.apply_labels()
+                    timer.start_stop_button.invoke()
+                    for appliance in self.ctx.read_devices:
+                        click_device(appliance)
+                    before = timer.elapsed_time
+                    timer.advance_button.invoke()
+                    self.assertEqual(timer.elapsed_time - before, timedelta(seconds=15))
+                    timer.start_stop_button.invoke()  # Pause while inspecting and saving.
+                    count = recording_status(self.ctx)["frames"]
+                    self.assertGreaterEqual(count, 15)
+                    deadline = time.monotonic() + 2
+                    while f"Frames: {count}" not in ui.recording_text.get() and time.monotonic() < deadline:
+                        self.pump()
+                        time.sleep(.02)
+                    self.assertIn(f"Frames: {count}", ui.recording_text.get())
+                    self.assertTrue(all(item.state == 1 for item in self.ctx.read_devices))
+                    prediction = self.ctx.house_state.activity_state()["har_prediction"]
+                    self.assertIn(prediction["status"], ("ready", "partial", "uncertain"))
+                    self.assertFalse(set(prediction["activities"]) & set(prediction["uncertain_activities"]))
+                    ui.stop_button.invoke()
+                    timer.start_stop_button.invoke()
+                    for appliance in self.ctx.read_devices:
+                        click_device(appliance)
+                    timer.reset_button.invoke()
+                    deadline = time.monotonic() + 2
+                    while self.ctx.timer_app_instance is not None and time.monotonic() < deadline:
+                        self.pump()
+                        time.sleep(.02)
+                    self.assertIsNone(self.ctx.timer_app_instance)
+                saved = storage.list_sessions()
+                self.assertEqual(len(saved), 2)
+                self.assertTrue(all(session["partition"] == "target" and len(session["frames"]) >= 15 for session in saved))
+                self.assertEqual(len({session["simulation_session_id"] for session in saved}), 2)
+            finally:
+                ui.close()
 
     def check_light_only_manual_simulation(self, light_type):
         content = SMOKE_SCENARIO.replace("motion,50,50,PIR,0,1,1,0,90,None,None\n", "")

@@ -6,7 +6,7 @@ import re
 from collections import Counter, defaultdict
 from typing import Iterable
 
-from models import Device, Door, Point, Room, Sensor, Wall
+from models import Device, Door, Point, Room, Sensor, Wall, is_fixture
 from lighting import SMART_LIGHT, with_integrated_light_meters
 
 
@@ -363,6 +363,8 @@ def update_room_power(rooms: Iterable[Room], sensors: Iterable[Sensor], devices:
             continue
         seen.add(sensor.name)
         source = devices_by_name.get(sensor.associated_device, sensor)
+        if is_fixture(source):
+            continue
         if getattr(source, "type", None) == SMART_LIGHT and not sensor.integrated:
             # The built-in meter already measures this load.
             continue

@@ -1,71 +1,18 @@
-import tkinter as tk
 import math
-import os
-import json
 from typing import Optional
+from PIL import Image, ImageDraw, ImageTk
 
 from consumption_profiles import consumption_profiles, get_device_consumption
-from models import Sensor, Device, Point, Door, Wall
 from lighting import LIGHT_TYPES
 from label_layout import create_map_label, layout_map_labels
 from canvas_zoom import to_canvas, to_canvas_length
-
-# Cache to avoid re-reading CSVs repeatedly when drawing sensors.
-_REAL_TEMP_CACHE: dict[str, bool] = {}
+from models import is_fixture
 
 PIR_MAX_DISTANCE = 230
 PIR_FOV_ANGLE = 60
 PIR_FOV_TAG = "fov"
 PIR_FOV_FILL = (255, 231, 163)
 PIR_FOV_OUTLINE = (210, 139, 0)
-
-
-def _is_real_temperature_sensor(sensor_name: str, logs_dir: str = "devices") -> bool:
-    """Return True if this Temperature sensor is backed by real DHT logs.
-
-    We detect it by:
-      1) Trying label-based CSV lookup (sensor_name).
-      2) Falling back to sensor_map.json -> gpio lookup.
-    """
-    if not sensor_name:
-        return False
-    if sensor_name in _REAL_TEMP_CACHE:
-        return _REAL_TEMP_CACHE[sensor_name]
-
-    ok = False
-    try:
-        from app.hardware.real_sensors import load_temp_by_gpio_any_csv, load_temp_by_label_any_csv
-
-        # 1) label lookup
-        df = None
-        try:
-            df = load_temp_by_label_any_csv(sensor_name, logs_dir=logs_dir)
-        except TypeError:
-            # older signature (no logs_dir)
-            df = load_temp_by_label_any_csv(sensor_name)
-        if df is not None and not df.empty and "value" in df.columns:
-            ok = True
-        else:
-            # 2) gpio lookup via sensor_map.json
-            mapping_path = "sensor_map.json"
-            if os.path.isfile(mapping_path):
-                with open(mapping_path, "r", encoding="utf-8") as f:
-                    mapping = json.load(f) if f else {}
-                cfg = mapping.get(sensor_name, {}) if isinstance(mapping, dict) else {}
-                if isinstance(cfg, dict) and cfg.get("by") == "dht":
-                    gpio = cfg.get("gpio")
-                    if gpio is not None:
-                        try:
-                            df2 = load_temp_by_gpio_any_csv(int(gpio), logs_dir=logs_dir)
-                        except TypeError:
-                            df2 = load_temp_by_gpio_any_csv(int(gpio))
-                        if df2 is not None and not df2.empty and "value" in df2.columns:
-                            ok = True
-    except Exception:
-        ok = False
-
-    _REAL_TEMP_CACHE[sensor_name] = ok
-    return ok
 
 
 def _temperature_color(sensor_name: str, changing: bool = False) -> str:
@@ -164,36 +111,26 @@ def _clipped_pir_ray(sensor, angle_degrees: float, walls, doors) -> tuple[float,
     )
 
 
-def _blend_with_white(color: tuple[int, int, int], opacity: float) -> str:
-    channels = [round(255 - (255 - channel) * opacity) for channel in color]
-    return "#" + "".join(f"{channel:02x}" for channel in channels)
+def _pir_fov_image(points):
+    """Rasterize the clipped polygon with a transparent background."""
+    coordinates = list(zip(points[::2], points[1::2]))
+    left = math.floor(min(x for x, _ in coordinates)) - 1
+    top = math.floor(min(y for _, y in coordinates)) - 1
+    right = math.ceil(max(x for x, _ in coordinates)) + 1
+    bottom = math.ceil(max(y for _, y in coordinates)) + 1
+    image = Image.new("RGBA", (right - left + 1, bottom - top + 1))
+    ImageDraw.Draw(image).polygon(
+        [(x - left, y - top) for x, y in coordinates],
+        fill=(*PIR_FOV_FILL, 255), outline=(*PIR_FOV_OUTLINE, 255),
+    )
+    return (left, top), image
 
 
-def _pir_fov_style(transparency: int) -> dict[str, str]:
-    transparency = max(0, min(100, int(transparency)))
-    opacity = 1.0 - transparency / 100.0
-    if opacity <= 0:
-        return {"fill": "", "outline": "#ffffff", "stipple": ""}
-
-    # Tk Canvas has no alpha channel. Combine its built-in density patterns
-    # with color blending so every slider position produces a useful preview.
-    if opacity > 0.75:
-        density, stipple = 1.0, ""
-    elif opacity > 0.5:
-        density, stipple = 0.75, "gray75"
-    elif opacity > 0.25:
-        density, stipple = 0.5, "gray50"
-    elif opacity > 0.125:
-        density, stipple = 0.25, "gray25"
-    else:
-        density, stipple = 0.125, "gray12"
-
-    color_opacity = min(1.0, opacity / density)
-    return {
-        "fill": _blend_with_white(PIR_FOV_FILL, color_opacity),
-        "outline": _blend_with_white(PIR_FOV_OUTLINE, opacity),
-        "stipple": stipple,
-    }
+def _pir_fov_with_transparency(image, transparency):
+    opacity = 1.0 - max(0, min(100, int(transparency))) / 100.0
+    rendered = image.copy()
+    rendered.putalpha(image.getchannel("A").point(lambda alpha: round(alpha * opacity)))
+    return rendered
 
 
 def draw_pir_fov(canvas, sensor, walls=(), doors=()) -> None:
@@ -215,13 +152,17 @@ def draw_pir_fov(canvas, sensor, walls=(), doors=()) -> None:
         )
         points.extend(to_canvas(canvas, ray_x, ray_y))
 
-    style = _pir_fov_style(getattr(canvas, "_pir_fov_transparency", 50))
-    canvas.create_polygon(
-        *points,
-        width=1,
+    transparency = getattr(canvas, "_pir_fov_transparency", 50)
+    position, image = _pir_fov_image(points)
+    photo = ImageTk.PhotoImage(_pir_fov_with_transparency(image, transparency), master=canvas)
+    item = canvas.create_image(
+        *position, anchor="nw", image=photo,
         tags=(PIR_FOV_TAG, f"{sensor.name}_fov"),
-        **style,
     )
+    if not hasattr(canvas, "_pir_fov_images"):
+        canvas._pir_fov_images = {}
+    # Keep Tk images alive and reuse the clipped geometry while the slider moves.
+    canvas._pir_fov_images[item] = (image, photo)
     # Keep the field visible above the grid, but behind walls and map markers.
     canvas.tag_raise(PIR_FOV_TAG, "background_grid")
 
@@ -236,6 +177,7 @@ def set_pir_fov_sources(canvas, sensors, walls=(), doors=()) -> None:
 def refresh_pir_fov(canvas) -> None:
     """Redraw PIR overlays after sensors, walls, or doors change."""
     canvas.delete(PIR_FOV_TAG)
+    canvas._pir_fov_images = {}
     if getattr(canvas, "_show_pir_fov", False):
         sensors = getattr(canvas, "_pir_fov_sensors", ())
         walls = getattr(canvas, "_pir_fov_walls", ())
@@ -253,7 +195,14 @@ def set_pir_fov_transparency(canvas, transparency: int) -> int:
         requested = 50
     selected = max(0, min(100, requested))
     canvas._pir_fov_transparency = selected
-    canvas.itemconfigure(PIR_FOV_TAG, **_pir_fov_style(selected))
+    images = getattr(canvas, "_pir_fov_images", {})
+    for item, (image, _previous_photo) in images.items():
+        # Replace the displayed Tk image so native renderers invalidate their
+        # cached alpha, including transitions to and from complete transparency.
+        photo = ImageTk.PhotoImage(_pir_fov_with_transparency(image, selected), master=canvas)
+        canvas.itemconfig(item, image=photo)
+        images[item] = (image, photo)
+    # Alpha zero is fully invisible while preserving bounds for stable zoom/scroll.
     return selected
 
 
@@ -270,6 +219,22 @@ def set_pir_fov_visibility(
     refresh_pir_fov(canvas)
 
 
+def sensor_visibility(canvas, sensor_type):
+    key = "_pir_visibility" if str(sensor_type).upper() == "PIR" else "_sensor_visibility"
+    return getattr(canvas, key, "full")
+
+
+def set_sensor_visibility(canvas, mode, *, pir=False):
+    """Change map graphics only; sensor models and measurements remain active."""
+    if mode not in ("full", "markers", "hidden"):
+        raise ValueError("Unknown sensor visibility mode.")
+    setattr(canvas, "_pir_visibility" if pir else "_sensor_visibility", mode)
+    group = "pir_sensor" if pir else "other_sensor"
+    canvas.itemconfig(group, state="hidden" if mode == "hidden" else "normal")
+    canvas.itemconfig(f"{group}_label", state="normal" if mode == "full" else "hidden")
+    refresh_pir_fov(canvas)
+
+
 def draw_sensor(canvas, sensor):
     name, x, y, type_s, min_val, state = sensor.name, sensor.x, sensor.y, sensor.type, sensor.min_val, sensor.state
 
@@ -283,6 +248,8 @@ def draw_sensor(canvas, sensor):
         color = "green" if float(state) > float(min_val) else "red"
     rect_tag = f'{name}_rect_sensor'
     text_tag = f'{name}_text_sensor'
+    group = "pir_sensor" if str(type_s).upper() == "PIR" else "other_sensor"
+    mode = sensor_visibility(canvas, type_s)
     canvas_x, canvas_y = to_canvas(canvas, x, y)
     radius = to_canvas_length(canvas, 5)
     marker_id = canvas.create_rectangle(
@@ -291,7 +258,8 @@ def draw_sensor(canvas, sensor):
         canvas_x + radius,
         canvas_y + radius,
         fill=color,
-        tags=('sensor', rect_tag),
+        tags=('sensor', group, rect_tag),
+        state="hidden" if mode == "hidden" else "normal",
     )
     create_map_label(
         canvas,
@@ -299,11 +267,12 @@ def draw_sensor(canvas, sensor):
         y,
         text=name,
         fill=color,
-        tags=('sensor', 'sensor_label', text_tag),
+        tags=('sensor', 'sensor_label', group, f'{group}_label', text_tag),
         kind="sensor",
         font=("Helvetica", 9),
         hover_target=marker_id,
     )
+    canvas.itemconfig(text_tag, state="normal" if mode == "full" else "hidden")
     raise_overlay_labels(canvas)
 
 
@@ -317,19 +286,6 @@ def raise_overlay_labels(canvas):
 def calculate_distance(x1, y1, x2, y2):
     return math.sqrt((x2 - x1) ** 2 + (y2 - y1) ** 2)
 
-def draw_fov(canvas, x, y, max_distance, fov_angle, direction):
-    direction_rad = math.radians(direction)
-    fov_half_angle_rad = math.radians(fov_angle / 2)
-    vertex1_x = x + max_distance * math.cos(direction_rad - fov_half_angle_rad)
-    vertex1_y = y + max_distance * math.sin(direction_rad - fov_half_angle_rad)
-    vertex2_x = x + max_distance * math.cos(direction_rad + fov_half_angle_rad)
-    vertex2_y = y + max_distance * math.sin(direction_rad + fov_half_angle_rad)
-    canvas.delete('fov')
-    x, y = to_canvas(canvas, x, y)
-    vertex1_x, vertex1_y = to_canvas(canvas, vertex1_x, vertex1_y)
-    vertex2_x, vertex2_y = to_canvas(canvas, vertex2_x, vertex2_y)
-    canvas.create_polygon(x, y, vertex1_x, vertex1_y, vertex2_x, vertex2_y,
-                          fill="", outline="blue", width=2, tags='fov')
 
 def get_nearby_device_states(sensor, devices, walls, doors, max_distance=100):
     x1, y1 = sensor.x, sensor.y
@@ -489,6 +445,9 @@ def update_devices_consumption(canvas, devices, delta_seconds, timer_app_instanc
 
     for i in range(len(devices)):
         device = devices[i]
+        if is_fixture(device):
+            active_cycles_store.pop(device.name, None)
+            continue
         name, dx, dy, type, power, state, min_c, max_c, current_cons, cons_dir = (
             device.name,
             device.x,
@@ -529,9 +488,9 @@ def update_devices_consumption(canvas, devices, delta_seconds, timer_app_instanc
                         pass
 
                 # At end of profile: for non-continuous devices, turn OFF and close cycle.
-                # Continuous: Refrigerator, Computer and Oven continue in duration module.
+                # Manually controlled devices remain on past the profile endpoint.
                 if elapsed_min >= profile_duration:
-                    if cycle_type not in ["Fridge", "Computer", "Oven"]:
+                    if cycle_type not in ["Fridge", "Computer", "Oven", "Microwave", "TV", "PlayStation"]:
                         # Turn off the device and close the cycle
                         device.state = 0
                         device.current_consumption = 0

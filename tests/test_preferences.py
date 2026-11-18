@@ -28,6 +28,8 @@ DEFAULTS = {
     "snap_to_grid": True,
     "show_grid": True,
     "show_room_types": True,
+    "sensor_visibility": "full",
+    "pir_visibility": "full",
     "confirm_exit_app": True,
     "confirm_delete_scenario": True,
     "confirm_delete_point": True,
@@ -42,6 +44,16 @@ DEFAULTS = {
 
 
 class PreferenceTests(unittest.TestCase):
+    def test_sensor_and_pir_visibility_are_saved_independently(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "settings.json"
+            save_preferences({"sensor_visibility": "markers", "pir_visibility": "hidden"}, path)
+            loaded = load_preferences(path)
+            self.assertEqual((loaded["sensor_visibility"], loaded["pir_visibility"]), ("markers", "hidden"))
+            path.write_text(json.dumps({"sensor_visibility": False, "pir_visibility": "invalid"}), encoding="utf-8")
+            loaded = load_preferences(path)
+            self.assertEqual((loaded["sensor_visibility"], loaded["pir_visibility"]), ("full", "full"))
+
     def test_missing_file_is_created_with_defaults(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             path = Path(tmpdir) / "settings.json"

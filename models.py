@@ -4,6 +4,27 @@ from typing import Optional, List
 from dataclasses import dataclass, field
 
 
+FIXTURE_TYPES = ("Bed", "Sofa", "Chair", "Shower", "Sink", "Toilet")
+
+
+def is_fixture(obj) -> bool:
+    """Also recognize passive objects saved by older versions as devices."""
+    if isinstance(obj, dict):
+        return obj.get("object_kind") == "fixture" or obj.get("type") in FIXTURE_TYPES
+    return isinstance(obj, Fixture) or getattr(obj, "type", None) in FIXTURE_TYPES
+
+
+@dataclass
+class Fixture:
+    """Furniture or sanitary fixture, with no electrical measurements."""
+    name: str
+    x: int
+    y: int
+    type: str
+    state: int = 0  # Occupied/in use according to an associated load sensor.
+    categories: Optional[List[str]] = None
+
+
 @dataclass
 class Point:
     """Represents a reference point on the map."""
@@ -27,6 +48,7 @@ class Sensor:
     consumption: Optional[float] = None  # for Smart Meter
     associated_device: Optional[str] = None  # device linked to this sensor
     integrated: bool = False  # Runtime meter owned by a smart light
+    categories: Optional[List[str]] = None  # None: shared type defaults; []: deliberately unclassified
 
 
 @dataclass
@@ -53,6 +75,7 @@ class Device:
     consumption_direction: int = 1  # 1 = increasing, -1 = decreasing
     light_control: str = "manual"  # "manual" or "automatic", independent of metering
     light_switches: Optional[List[LightSwitch]] = None  # None initializes a legacy/default switch
+    categories: Optional[List[str]] = None  # Categories describe the object, never its activity
     _integrated_smartmeter: Optional[Sensor] = field(default=None, init=False, repr=False, compare=False)
 
     def is_on(self) -> bool:
@@ -122,50 +145,3 @@ class Room:
             sum(x for x, _ in self.polygon) / len(self.polygon),
             sum(y for _, y in self.polygon) / len(self.polygon),
         )
-
-
-@dataclass
-class SimulationState:
-    """Container for all simulation objects.
-    
-    This replaces the scattered global variables (sensors, devices, points, etc.)
-    """
-    sensors: List[Sensor] = field(default_factory=list)
-    devices: List[Device] = field(default_factory=list)
-    points: List[Point] = field(default_factory=list)
-    walls: List[Wall] = field(default_factory=list)
-    doors: List[Door] = field(default_factory=list)
-    rooms: List[Room] = field(default_factory=list)
-
-    def get_sensor(self, name: str) -> Optional[Sensor]:
-        """Get sensor by name."""
-        for s in self.sensors:
-            if s.name == name:
-                return s
-        return None
-
-    def get_device(self, name: str) -> Optional[Device]:
-        """Get device by name."""
-        for d in self.devices:
-            if d.name == name:
-                return d
-        return None
-
-    def get_point(self, name: str) -> Optional[Point]:
-        """Get point by name."""
-        for p in self.points:
-            if p.name == name:
-                return p
-        return None
-
-    def sensor_names(self) -> List[str]:
-        """Get all sensor names."""
-        return [s.name for s in self.sensors]
-
-    def device_names(self) -> List[str]:
-        """Get all device names."""
-        return [d.name for d in self.devices]
-
-    def point_names(self) -> List[str]:
-        """Get all point names."""
-        return [p.name for p in self.points]

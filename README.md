@@ -57,13 +57,135 @@ The main simulation workflows are available from the `Simulation` menu:
 - `Automatic` for replaying activity and sensor data;
 - `LLM Smart Meter` for extracting and reusing appliance consumption cycles.
 
+## Learned Activity Recognition Across Houses
+
+Activity recognition now uses the trained model exclusively. The old appliance-name,
+meal-time and entry/exit rules have been removed from `activity.py`; it manages
+model predictions, activity intervals and polling.
+
+Open **Scenario > Learned activity recognition…** to assign shared object
+categories, record observations with human activity labels, and compare Random
+Forest with Gradient Boosting on a source house. Both train one binary classifier
+per activity, using identical features and source session splits. The saved
+comparison can recognize activities in other
+houses through category-based measurements; there is no manual device-to-activity
+transfer rule. A category alone never starts an activity, and learned recognition
+requires an activated trained model.
+
+HAR reads electrical power only from Smart Meter observations, including the
+built-in meters of smart lights. An unmetered appliance still runs and consumes
+power internally, but its internal consumption is not a HAR input or a field in
+new HAR recordings. HAR also derives electrical ON/OFF only from that measured
+power: more than 0 W is ON and 0 W is OFF. Without a valid reading, both power
+and state are unobserved, not a measured OFF; an explicitly missing sample cannot
+reuse a cached wattage. Internal electrical state is excluded from new HAR
+recordings and ignored in older ones. Retrain earlier models for experiments
+that relied on internal power or ON/OFF; saved meter recordings can be reused.
+
+New recordings also freeze the categories of objects covered by each PIR's
+field of view. Coverage uses the same range, direction, walls and closed doors
+as the simulator, checking each object's logical centre. HAR gains separate
+presence channels for covered object categories, including appliances, seating
+and beds, even in a single room. IDs and absolute coordinates are not model
+inputs, and coverage does not automatically assign an activity. Overlapping
+fields retain every visible category instead of guessing which object is used.
+Record new independent source sessions and retrain to use these channels;
+earlier recordings lack the coverage snapshots and are treated as unknown.
+The training report shows how many labelled training observations have PIR
+object context. Older saved models retain their original feature schema.
+
+For quick recording, click the **graduation hat** in the left toolbar. A panel
+below the map offers activity buttons, **No activity (idle)**, **Add activity**,
+and **Record / Stop & save**. Select the true activities (multiple selections
+are allowed), choose **Source (training)** or **Target (test)**, then Record.
+It enters Manual mode and starts or resumes the clock automatically. Activity
+changes label subsequent observations; clearing all choices leaves them unlabelled.
+Stop & save ends recording while the simulation clock remains under its own
+Start/Stop control. Reset before recording another independent session. Hiding
+the panel leaves recording running. Custom names are shared through
+`har_data/activities.json`; adding a name does not train the model.
+The panel imports names from existing recordings and models once, then reads
+only this small shared list when opened. Saving a labelled recording or model
+updates the list automatically. The first opening after upgrading may therefore
+take longer; later openings do not scan the training history. Files copied
+manually into `har_data/` after this import do not add names automatically;
+use **Add activity** for any additional names.
+**Train & models…** opens the existing training tab.
+
+The panel starts with 12 activity labels: cooking, eating, relaxing, sleeping,
+working, cleaning, laundry, washing dishes, using the bathroom, showering,
+leaving home, and returning home. **No activity (idle)** is a separate option.
+These are recording labels; recognition still requires labelled examples and
+a trained model. Custom labels and names in saved recordings/models are also listed.
+
+The window has three tabs: **Categories**, **Record sessions**, and **Train &
+evaluate**. Training uses at least three independent source simulations; target
+sessions are reserved for evaluation. **Add synthetic demo sessions** offers a
+scripted trial whose results do not measure accuracy on real people. Model vote
+confidence is uncalibrated and differs from measured test accuracy.
+
+**Train & compare RF + Gradient Boosting** saves both models under one selection.
+Before training, choose the comparison's name in a dialog. It suggests
+`SourceHouse_[houseID]_YYYY-MM-DD_`, using the first eight characters of the
+selected source house ID. A generic `House` label uses the open scenario's file
+name when it belongs to that source. The cursor starts at the end; append a description or
+replace the complete text. Cancel leaves training unstarted. Empty or already
+used names are rejected; earlier saved models keep their names.
+Activate that comparison to see Random Forest on the left and Gradient Boosting
+on the right in Manual mode. Earlier saved forest models still work individually.
+Training runs in the background; fitting two algorithms takes more time than one.
+The JSON report in `har_data/reports/` contains precision, recall, F1 and coverage
+for both models, with source hold-out and target results kept separate. Model
+files preserve source session fingerprints, seed, parameters and sklearn version.
+Paired live predictions, simulated time, model IDs, and any current recording
+labels are appended to `saves/<session>/har_comparison.jsonl`. Without a labelled
+recording the expected activity is `null`; predictions are never treated as truth.
+The existing Activity Log continues to show Random Forest activity intervals.
+
+New models use independent binary activity classifiers (one per label and algorithm).
+Each tree can compare all input features when selecting its splits, so a strong
+sensor signal is not excluded by a random subset of the sparse category channels.
+Each activity has its own confidence and abstention decision: an uncertain label
+does not suppress other confident activities. The status panel lists confident
+activities with their confidence and marks uncertain activities separately.
+Training time and model size can increase as more activities are learned.
+Evaluation reports include per-activity coverage (the fraction of observations
+with a confident decision); exact-set accuracy requires all labels to be confident.
+
+Separate activities can be reported simultaneously without creating a combined
+activity label. Recognition of unseen simultaneous activities still depends on
+distinguishable, representative observations; it is not guaranteed by classifier
+independence. The synthetic regression checks this behavior with two distinct
+sensor channels and renamed sensors/devices in another house, not real people.
+Existing version-1 joint models remain loadable with their original prediction
+and whole-set abstention behavior. Train and activate a new model from your saved
+source sessions to use independent detection; old models are not rewritten.
+
+Saved models appear in the simulator as `House_A_2026-10-28_001`: the source
+house name, local creation date and a sequence number for that name/date.
+The active-model status uses the same readable name. Existing models recover
+the source name from source recordings when available. UUIDs, JSON filenames,
+and scenario links remain unchanged; new models also retain their display name
+and source-house name in their metadata.
+
+Try the [source oven/TV scenario](examples/learned_har/source_oven_tv.csv) and
+[target microwave/console scenario](examples/learned_har/target_microwave_console.csv).
+Follow the [Italian click-by-click guide](docs/learned_har_it.md) for a demo,
+recording your own sessions, and preserving data. Shared categories, sessions,
+models and reports live under `har_data/`; scenario CSVs preserve house identity,
+custom categories and the selected model ID. Copy both when moving the project.
+
+## Editor And Simulation Controls
+
 Personal preferences are available from the `Settings` menu. They control the
 manual simulation's initial time, whether `saved.csv` or a selected scenario
 CSV is loaded at application startup, whether Manual mode is activated
 automatically, and whether PIR fields of view are shown. These choices are stored in
 the local, Git-ignored `settings.json` file. Visible PIR fields are clipped by
 walls and closed doors to match the simulator's detection behavior, and their
-transparency can be adjusted from the same menu. The window state and canvas
+transparency can be adjusted from the same menu: 0% is opaque and 100% is
+fully invisible. The overlays use actual alpha transparency, including on
+macOS, and resize with canvas zoom. The window state and canvas
 zoom position are also restored between application launches. Room outlines and
 recognized room types can be shown or hidden with **Settings > Show room types**.
 Room labels also show live power in watts, calculated by summing current Smart
@@ -73,7 +195,48 @@ shared room boundaries. Devices without a Smart Meter are excluded, and rooms
 without meters are marked **No smart meters**. **Scenario > Recognize rooms**
 shows the same live totals in the room list.
 
-To add a light, choose **Scenario > Add devices**, select **Normal Light** or
+**Settings > Sensors** controls other sensors, while **Settings > PIR sensors**
+controls PIR markers separately. Each offers **With names**, **Markers only**,
+and **Hidden**, remembered between launches. PIR markers and names are independent
+of their fields of view, controlled by the separate **Show PIR fields of view**
+choice. These are display options: sensor measurements, recordings, room power,
+and activity recognition continue while markers are hidden.
+
+Drawing a new door along an existing wall replaces only the overlapping span
+with the door, retaining the wall pieces on either side. The opening affects
+both the map and PIR visibility. Undo/Redo restores the whole insertion in one
+step, including the previous wall and its reference points.
+
+To add a device, choose **Scenario > Add devices** and click its map position.
+In the dialog, choose **Object kind**: **Electrical device** or
+**Non-electrical object**. The latter contains Bed, Sofa, Chair, Shower, Sink,
+and Toilet, with no wattage fields or electrical consumption cycles.
+Choose a **Category** to filter **Type**: for example,
+**Device_Cooking** offers Oven, Microwave, and Toaster. **All devices** shows
+the electrical list; **All objects** shows the non-electrical list. Objects
+with multiple shared categories appear in each relevant
+group; selecting a group preserves all of the device's categories.
+
+Check **Add associated sensor** to create an ordinary external sensor beside the
+object automatically. Electrical devices default to Smart Meter; non-electrical
+objects default to Weight. The sensor has its own marker and can be moved or
+deleted independently. Placement avoids nearby sensors and stays in the object's
+room when a room is available. Smart lights retain their built-in meter.
+For a linked Weight sensor, clicking near the object in Manual mode activates
+its simulated load; moving away releases it, even if the sensor marker was moved.
+This is a binary load observation, not a weight in kilograms or an activity label.
+**Add sensors** also allows an optional object link for Weight sensors.
+Undo/Redo treats creation of an object and its optional sensor as one edit.
+Older scenarios containing these six passive types in Devices are converted on
+load; new saves use a separate Fixtures section without power columns. HAR keeps
+their existing capability categories and records no electrical measurement for them.
+
+Microwave, Toaster, TV, and PlayStation have illustrative nominal-load profiles
+in `consumption_profiles.py`. The toaster switches off after its three-minute
+cycle; Microwave, TV, and PlayStation remain on until switched off manually.
+These defaults are simulated examples, not measured appliance traces.
+
+To add a light, select **Device_Lighting** or **All devices**, select **Normal Light** or
 **Smart Light**, and enter its wattage (10 W by default). Both draw their configured
 power while on and 0 W while off, and stay on until switched off. Normal lights
 need a separate **Smart Meter** sensor to contribute to room power. Smart lights
@@ -112,6 +275,10 @@ once—from **Settings > Confirmations**.
 The canvas uses mode-specific mouse controls. Middle-button drag always pans the
 home. In Select mode, left-click selects a point, sensor, device, wall, or door;
 dragging moves it, while dragging a wall or door endpoint resizes that segment.
+Walls and doors retain their reference points when moved or resized; other
+segments attached to a shared point follow it. Deleting a wall or door also
+removes its endpoints when no remaining segment uses them. Unrelated standalone
+points are kept, and Undo restores the original points and connections.
 Right-click opens its action menu, while right-dragging draws a marquee that
 selects multiple objects; left-dragging one of them moves the entire selection.
 Copy, Cut, Paste, and Duplicate are available

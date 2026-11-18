@@ -36,11 +36,13 @@ from app.ui.device_inspector import (
     begin_point_segment_mode,
     install_device_inspector,
     record_wall_addition,
+    record_door_addition,
     delete_selected_object,
     undo_last_movement,
     redo_last_movement,
 )
 from app.ui.tool_palette import ToolPalette
+from app.ui.training_panel import toggle_training_panel
 from app.ui.theme import apply_theme_tree, get_theme_palette, set_theme_role
 from app.controllers.llm_smartmeter import open_llm_smartmeter_ui
 from app.ui.rooms import open_rooms_ui
@@ -58,6 +60,7 @@ from utils import (
     set_pir_fov_sources,
     set_pir_fov_transparency,
     set_pir_fov_visibility,
+    set_sensor_visibility,
 )
 
 
@@ -107,12 +110,14 @@ def _menu_add_point(ctx: AppContext):
 
 def _menu_add_device(ctx: AppContext):
     from app.ui.rooms import refresh_rooms
+    from app.ui.device_inspector import record_device_addition
 
     def device_changed():
         rooms = refresh_rooms(ctx, draw=True)
         runtime_sources = getattr(ctx, "_manual_runtime_sources", None)
         if isinstance(runtime_sources, dict):
             runtime_sources["rooms"] = rooms
+        _refresh_pir_overlay(ctx)
 
     begin_placement_mode(
         ctx,
@@ -122,6 +127,8 @@ def _menu_add_device(ctx: AppContext):
             event,
             ctx.load_active,
             on_changed=device_changed,
+            rooms=getattr(ctx, "rooms", ()),
+            on_created=lambda obj, sensor: record_device_addition(ctx, obj, sensor),
         ),
     )
 
@@ -179,25 +186,16 @@ def _menu_add_wall(ctx: AppContext):
 
 
 def _menu_add_door(ctx: AppContext):
-    from app.ui.rooms import refresh_rooms
-
-    def geometry_changed():
-        rooms = refresh_rooms(ctx, draw=True)
-        runtime_sources = getattr(ctx, "_manual_runtime_sources", None)
-        if isinstance(runtime_sources, dict):
-            runtime_sources["rooms"] = rooms
-        _refresh_pir_overlay(ctx)
+    def create_door(point1, point2):
+        door = add_door_between_points(ctx.canvas, point1, point2, ctx.load_active)
+        if door is not None:
+            record_door_addition(ctx, door)
+        return door
 
     begin_point_segment_mode(
         ctx,
         "Add doors",
-        lambda point1, point2: add_door_between_points(
-            ctx.canvas,
-            point1,
-            point2,
-            ctx.load_active,
-            on_changed=geometry_changed,
-        ),
+        create_door,
         continuous=True,
     )
 
@@ -243,13 +241,16 @@ def build_home_ui(ctx: AppContext):
         side=tk.RIGHT,
     )
 
-    h_scroll = tk.Scrollbar(image_frame, orient=tk.HORIZONTAL)
+    # Keep the tool palette visible while the map makes room for training.
+    map_frame = set_theme_role(tk.Frame(image_frame), "background")
+    h_scroll = tk.Scrollbar(map_frame, orient=tk.HORIZONTAL)
     h_scroll.pack(side=tk.BOTTOM, fill=tk.X)
-    v_scroll = tk.Scrollbar(image_frame, orient=tk.VERTICAL)
+    v_scroll = tk.Scrollbar(map_frame, orient=tk.VERTICAL)
     v_scroll.pack(side=tk.RIGHT, fill=tk.Y)
 
     tool_palette = ToolPalette(image_frame)
     tool_palette.pack(side=tk.LEFT, fill=tk.Y, padx=(0, 5))
+    map_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
     ctx._tool_palette = tool_palette
     tool_palette.add_tool(
         "select",
@@ -273,7 +274,7 @@ def build_home_ui(ctx: AppContext):
     tool_palette.add_tool(
         "device",
         "device",
-        "Add device\nChoose this tool, then left-click its position.",
+        "Add device / non-electrical object\nChoose this tool, then left-click its position.",
         lambda: _menu_add_device(ctx),
     )
     tool_palette.add_tool(
@@ -308,9 +309,14 @@ def build_home_ui(ctx: AppContext):
         "delete", "delete", "Delete selected object (⌘Delete on Mac / Delete)",
         lambda: delete_selected_object(ctx),
     )
+    tool_palette.add_separator()
+    tool_palette.add_tool(
+        "learn", "learn", "Training activities\nShow or hide activity recording below the map.",
+        lambda: toggle_training_panel(ctx, map_frame, h_scroll),
+    )
 
     canvas = tk.Canvas(
-        image_frame,
+        map_frame,
         width=900,
         height=900,
         xscrollcommand=h_scroll.set,
@@ -327,6 +333,8 @@ def build_home_ui(ctx: AppContext):
     canvas._show_room_types = bool(
         ctx.preferences.get("show_room_types", True)
     )
+    canvas._sensor_visibility = ctx.preferences.get("sensor_visibility", "full")
+    canvas._pir_visibility = ctx.preferences.get("pir_visibility", "full")
     set_theme_role(canvas, "canvas")
 
     def apply_zoom(action, event=None):
@@ -445,12 +453,12 @@ def build_home_ui(ctx: AppContext):
     timer_frame.pack(fill=tk.BOTH, expand=True)
     ctx.timer_frame = timer_frame
 
-    # Activity at the bottom - fixed smaller space
+    # Reserve the results' requested height before giving the timer the remaining space.
     activity_container = set_theme_role(
         tk.Frame(right_container, bg="lightgrey", width=400, height=150),
         "panel",
     )
-    activity_container.pack(side=tk.BOTTOM, fill=tk.X, expand=False, padx=10, pady=10)
+    activity_container.pack(side=tk.BOTTOM, fill=tk.X, expand=False, padx=10, pady=2, before=timer_container)
     activity_container.pack_propagate(False)
     ctx.activity_frame = activity_container
 
@@ -461,7 +469,8 @@ def build_home_ui(ctx: AppContext):
     file_menu = Menu(menu_bar, tearoff=0)
     ctx.file_menu = file_menu
     menu_bar.add_cascade(label="File", menu=file_menu)
-    file_menu.add_command(label="New", command=lambda: delete_scenario(ctx, ctx.canvas))
+    # Like Save below, let the macOS menu dismiss before opening a modal dialog.
+    file_menu.add_command(label="New", command=lambda: ctx.window.after_idle(lambda: delete_scenario(ctx, ctx.canvas)))
     file_menu.add_command(label="Open file", command=lambda: open_scenario(ctx, ctx.canvas))
     file_menu.add_command(label="Load default (saved.csv)", command=lambda: load_scenario_from_file(ctx, ctx.canvas))
     file_menu.add_separator()
@@ -485,6 +494,15 @@ def build_home_ui(ctx: AppContext):
     scenario_menu.add_command(label="Add sensors", command=lambda: _menu_add_sensor(ctx))
     scenario_menu.add_separator()
     scenario_menu.add_command(label="Recognize rooms", command=lambda: open_rooms_ui(ctx))
+    def learned_recognition():
+        from app.ui.learned_har import open_learned_har
+
+        open_learned_har(ctx)
+
+    scenario_menu.add_command(
+        label="Learned activity recognition…",
+        command=lambda: ctx.window.after_idle(learned_recognition),
+    )
 
     # Settings menu (personal preferences, independent from scenario files)
     settings_menu = Menu(menu_bar, tearoff=0)
@@ -645,6 +663,31 @@ def build_home_ui(ctx: AppContext):
         command=toggle_room_types,
     )
 
+    sensor_visibility_menus = []
+    for label, preference_key, pir in (
+        ("Sensors", "sensor_visibility", False),
+        ("PIR sensors", "pir_visibility", True),
+    ):
+        visibility_menu = Menu(settings_menu, tearoff=0)
+        sensor_visibility_menus.append(visibility_menu)
+        settings_menu.add_cascade(label=label, menu=visibility_menu)
+        variable = tk.StringVar(value=ctx.preferences.get(preference_key, "full"))
+
+        def change_visibility(*_trace, key=preference_key, is_pir=pir, selected=variable):
+            mode = selected.get()
+            set_sensor_visibility(ctx.canvas, mode, pir=is_pir)
+            from app.ui.device_inspector import clear_selection
+            clear_selection(ctx)
+            save_setting(key, mode)
+
+        variable.trace_add("write", change_visibility)
+        for text, mode in (("With names", "full"), ("Markers only", "markers"), ("Hidden", "hidden")):
+            visibility_menu.add_radiobutton(
+                label=text, variable=variable, value=mode,
+            )
+        # Tk menus refer to variable names; retain the Python variables as well.
+        visibility_menu._visibility_variable = variable
+
     confirmations_menu = Menu(settings_menu, tearoff=0)
     settings_menu.add_cascade(
         label="Confirmations",
@@ -693,16 +736,17 @@ def build_home_ui(ctx: AppContext):
         value=bool(ctx.preferences.get("show_pir_fov", False))
     )
 
-    def toggle_pir_fov():
+    def toggle_pir_fov(*_trace):
         visible = bool(show_pir_fov.get())
         sensors, walls, doors = _current_pir_sources(ctx)
         set_pir_fov_visibility(ctx.canvas, sensors, visible, walls, doors)
         save_setting("show_pir_fov", visible)
 
+    show_pir_fov.trace_add("write", toggle_pir_fov)
+    settings_menu._show_pir_fov_variable = show_pir_fov
     settings_menu.add_checkbutton(
         label="Show PIR fields of view",
         variable=show_pir_fov,
-        command=toggle_pir_fov,
     )
 
     def open_pir_transparency_slider():
@@ -788,6 +832,7 @@ def build_home_ui(ctx: AppContext):
         file_menu,
         scenario_menu,
         settings_menu,
+        *sensor_visibility_menus,
         start_time_menu,
         starting_home_menu,
         confirmations_menu,

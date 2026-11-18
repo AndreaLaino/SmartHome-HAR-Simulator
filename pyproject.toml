@@ -69,4 +69,4 @@ py-modules = [
 ]
 
 [tool.setuptools.packages.find]
-include = ["app*", "LLM*"]
+include = ["app*", "LLM*", "har*"]

@@ -81,9 +81,11 @@ class EditHistoryTests(unittest.TestCase):
         for _ in range(2):
             inspector.undo_last_movement(self.ctx)
             self.assertEqual(self.ctx.r_points, [corner, other])
+            self.assertIs(self.ctx.r_points[0], corner)
+            self.assertIs(self.ctx.r_points[1], other)
             self.assertEqual((self.ctx.read_walls, self.ctx.read_doors, self.geometry), ([wall], [door], [wall]))
             inspector.redo_last_movement(self.ctx)
-            self.assertEqual(self.ctx.r_points, [other])
+            self.assertEqual(self.ctx.r_points, [])
             self.assertEqual((self.ctx.read_walls, self.ctx.read_doors, self.geometry), ([], [], []))
 
     def test_redo_deletion_repeats_cleanup_and_next_undo_restores_updated_meter_history(self):
@@ -119,12 +121,14 @@ class EditHistoryTests(unittest.TestCase):
                 patch("wall.walls_coordinates", [wall]) as walls, \
                 patch("device.devices", []), patch("sensor.sensors", []), patch("door.doors", []):
             inspector.delete_map_selection(self.ctx, inspector.MapSelection("point", corner), confirm=False)
-            self.assertEqual((points, names, walls), ([other], [], []))
+            self.assertEqual((points, names, walls), ([], [], []))
             for _ in range(2):
                 inspector.undo_last_movement(self.ctx)
                 self.assertEqual((points, names, walls), ([corner, other], ["a", "b"], [wall]))
+                self.assertIs(points[0], corner)
+                self.assertIs(points[1], other)
                 inspector.redo_last_movement(self.ctx)
-                self.assertEqual((points, names, walls), ([other], [], []))
+                self.assertEqual((points, names, walls), ([], [], []))
 
     def test_sensor_deletion_redo_keeps_latest_history_for_the_next_undo(self):
         sensor = Sensor("motion", 50, 50, "PIR", 0, 1, 1, 0)

@@ -47,6 +47,24 @@ consumption_profiles = {
         }
     },
 
+
+    "Microwave": {
+        "standby": 0,
+        "profile": {0: 1000.0, 5: 1000.0},
+    },
+    "Toaster": {
+        "standby": 0,
+        "profile": {0: 900.0, 3: 900.0},
+    },
+    "TV": {
+        "standby": 0,
+        "profile": {0: 100.0, 60: 100.0},
+    },
+    "PlayStation": {
+        "standby": 0,
+        "profile": {0: 200.0, 60: 200.0},
+    },
+
     "Computer": {
         "standby": 40.0,
         "profile": {

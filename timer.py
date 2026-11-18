@@ -26,6 +26,8 @@ class TimerApp:
         self._advance_reset_token = None
         self._advance_batch_job = None
         self._advance_batch_token = None
+        self._timer_update_job = None
+        self._closed = False
 
         self.timer_frame = tk.Frame(parent, width=400, height=500, bg="lightgrey", bd=2, relief="sunken")
         self.timer_frame.pack(side="right", fill="both", padx=15, pady=15, expand=True)
@@ -288,7 +290,12 @@ class TimerApp:
         callback = self.reset_callback or self.stop_callback
         if had_session and callback:
             try:
-                callback()
+                if callback() is False:
+                    # A recording that could not be saved keeps its clock and
+                    # session so the user can retry without losing examples.
+                    self.last_update = None
+                    self.start_stop_button.config(text="Start")
+                    return
             except Exception:
                 pass
 
@@ -315,6 +322,9 @@ class TimerApp:
             pass
 
     def update_timer(self):
+        if getattr(self, "_closed", False):
+            return
+        self._timer_update_job = None
         if self.is_running:
             now = datetime.now()
             if self.last_update is None:
@@ -326,4 +336,18 @@ class TimerApp:
             simulated_time = self.get_simulated_time()
             self.label.config(text=f"Time: {simulated_time} \n Date: {self.current_date}")
 
-        self.timer_frame.after(100, self.update_timer)
+        self._timer_update_job = self.timer_frame.after(100, self.update_timer)
+
+    def close(self):
+        """Cancel owned callbacks before destroying an obsolete timer panel."""
+        if getattr(self, "_closed", False):
+            return
+        self._closed = True
+        self.is_running = False
+        self._cancel_advance_batch()
+        self._cancel_advance_reset()
+        job = getattr(self, "_timer_update_job", None)
+        self._timer_update_job = None
+        if job is not None:
+            self.timer_frame.after_cancel(job)
+        self.timer_frame.destroy()

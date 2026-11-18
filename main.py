@@ -31,13 +31,13 @@ def apply_startup_preferences(ctx: AppContext) -> None:
 
         start_sim(ctx)
 
-#Reconstruct the interface after returning from the Automatic setup
+
 def rebuild_main_interface(ctx: AppContext):
     win = ctx.window
     win.title("Simulator")
     build_home_ui(ctx)
 
-#Main
+
 def main():
     logger = setup_logging("app")
     logger.info("Starting Simulator application")
