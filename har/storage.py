@@ -213,6 +213,9 @@ def validate_session(session: dict) -> dict:
                 for point in polygon
             ):
                 raise ValueError("Room polygons must contain numeric coordinate pairs")
+        from har.pir_context import validate_context
+
+        validate_context(frame, session["catalogue"])
         labels = frame.get("labels")
         if labels is not None and (
             not isinstance(labels, list)

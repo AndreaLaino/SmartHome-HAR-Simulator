@@ -4,6 +4,7 @@ from app.io.safe_dialog import ask_save_file
 import csv
 import json
 import os
+from pathlib import Path
 from datetime import datetime
 from read import read_sensors
 from sensor import sensors
@@ -437,6 +438,20 @@ def append_interaction_row(house_state, row):
         state["interaction_file"].flush()
     except Exception as e:
         print(f"[ERROR] Writing interaction log: {e}")
+
+
+def log_har_comparison(house_state, row):
+    """Append paired predictions only inside an active simulation save session."""
+    state = _interaction_log_state(house_state)
+    if state["interaction_file"] is None or not state["interaction_session_dir"]:
+        return
+    payload = json.dumps(row, ensure_ascii=False, allow_nan=False, sort_keys=True)
+    if state.get("har_comparison_last_row") == payload:
+        return
+    path = Path(state["interaction_session_dir"]) / "har_comparison.jsonl"
+    with path.open("a", encoding="utf-8") as stream:
+        stream.write(payload + "\n")
+    state["har_comparison_last_row"] = payload
 
 def log_move(house_state, timestamp_sim: str, x:int, y:int):
     #Record a movement of the avatar

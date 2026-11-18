@@ -7,18 +7,81 @@ from __future__ import annotations
 
 from copy import deepcopy
 from datetime import datetime, timezone
+from pathlib import Path
 import gc
 import queue
 import threading
 import tkinter as tk
 import uuid
-from tkinter import ttk
+from tkinter import ttk, simpledialog
 
 from app.ui.theme import apply_theme_tree
 
 
 def parse_labels(value: str) -> list[str]:
     return list(dict.fromkeys(item.strip() for item in value.split(",") if item.strip()))
+
+
+def suggested_model_name(house_label, house_id, *, now=None):
+    house = "_".join(str(house_label or "House").split()) or "House"
+    timestamp = now if now is not None else datetime.now().astimezone()
+    return f"{house}_[{house_id[:8]}]_{timestamp:%Y-%m-%d}_"
+
+
+def validate_model_name(value, existing_names=()):
+    name = value.strip() if isinstance(value, str) else ""
+    if not name:
+        raise ValueError("Enter a model name.")
+    if any(ord(char) < 32 or ord(char) == 127 for char in name):
+        raise ValueError("The model name must be a single line of text.")
+    if name in existing_names:
+        raise ValueError("A saved model already uses this name. Choose a different name.")
+    return name
+
+
+class ModelNameDialog(simpledialog.Dialog):
+    """Editable comparison name; append to the suggestion or replace it all."""
+
+    def __init__(self, parent, initial_name, existing_names=()):
+        self.initial_name = initial_name
+        self.existing_names = set(existing_names)
+        super().__init__(parent, title="Save model comparison")
+
+    def body(self, master):
+        ttk.Label(master, text="Name for the Random Forest + Gradient Boosting comparison:",
+                  wraplength=460).pack(anchor="w", padx=8, pady=(8, 6))
+        self.name = tk.StringVar(master, value=self.initial_name)
+        self.entry = ttk.Entry(master, textvariable=self.name, width=56)
+        self.entry.pack(fill="x", padx=8)
+        self.entry.icursor(tk.END)
+        self.entry.selection_clear()
+        self.error = tk.StringVar(master)
+        ttk.Label(master, textvariable=self.error, wraplength=460).pack(anchor="w", padx=8, pady=(6, 0))
+        return self.entry
+
+    def buttonbox(self):
+        box = ttk.Frame(self, padding=8)
+        ttk.Button(box, text="Train & save", command=self.ok).pack(side="right", padx=4)
+        ttk.Button(box, text="Cancel", command=self.cancel).pack(side="right", padx=4)
+        box.pack(fill="x")
+        self.bind("<Return>", self.ok)
+        self.bind("<Escape>", self.cancel)
+        apply_theme_tree(self, "light")
+
+    def validate(self):
+        try:
+            self._chosen_name = validate_model_name(self.name.get(), self.existing_names)
+        except ValueError as error:
+            self.error.set(str(error))
+            return False
+        return True
+
+    def apply(self):
+        self.result = self._chosen_name
+
+
+def ask_model_name(parent, *, initial_name, existing_names=()):
+    return ModelNameDialog(parent, initial_name, existing_names).result
 
 
 def _config(ctx) -> dict:
@@ -46,6 +109,20 @@ def _source_house_names(sessions):
     return {session["house_id"]: session["house_label"]
             for session in sorted(sessions, key=lambda item: (str(item.get("created_at") or ""), item.get("session_id", "")))
             if session.get("partition") == "source" and session.get("house_label")}
+
+
+def training_house_name(ctx, sessions, source_id, *, edited_name=""):
+    """Resolve the selected source, never substitute the open target's name."""
+    recorded = _source_house_names(sessions).get(source_id, "House")
+    config = getattr(ctx, "har_config", {}) or {}
+    if config.get("house_id") == source_id:
+        for name in (edited_name, config.get("house_label"), recorded):
+            if isinstance(name, str) and name.strip() and name.strip().casefold() != "house":
+                return name.strip()
+        filename = getattr(ctx, "current_file", None)
+        if filename:
+            return Path(filename).stem
+    return recorded
 
 
 def model_display_names(models, sessions):
@@ -93,12 +170,17 @@ def model_display_names(models, sessions):
 
 def format_evaluation(report: dict) -> str:
     """Present evaluation scores without calling confidence an accuracy."""
+    if "algorithms" in report:
+        from har.learning import ALGORITHM_NAMES
+        return "\n\n".join(ALGORITHM_NAMES[algorithm] + ":\n" + format_evaluation(scores)
+                            for algorithm, scores in report["algorithms"].items())
     count = report.get("labelled_samples", 0)
     lines = []
     if report.get("scope") == "synthetic":
         lines.append("SYNTHETIC DEMONSTRATION: scripted observations and labels; this is not measured performance on real people.\n")
     lines.append(f"Labelled test observations: {count}")
-    for name, label in (("exact_match_accuracy", "Exact activity-set accuracy"), ("micro_f1", "Micro F1")):
+    for name, label in (("exact_match_accuracy", "Exact activity-set accuracy"), ("micro_f1", "Micro F1"),
+                        ("macro_f1", "Macro F1"), ("coverage", "Coverage (all activities decided)")):
         value = report.get(name)
         if isinstance(value, (int, float)):
             lines.append(f"{label}: {100 * value:.1f}%")
@@ -465,6 +547,7 @@ class LearnedHARWindow:
         frame.rowconfigure(5, weight=1)
         ttk.Label(frame, text=("Train from at least 3 independent labelled SOURCE sessions. Complete sessions are kept separate "
                               "for training, validation and source testing. Each activity has an independent detector. "
+                              "Random Forest and Gradient Boosting use identical source splits and features. "
                               "Target data is used only for evaluation."),
                   wraplength=990).grid(row=0, column=0, columnspan=3, sticky="ew", pady=(0, 10))
         ttk.Label(frame, text="Source house").grid(row=1, column=0, sticky="w")
@@ -482,9 +565,10 @@ class LearnedHARWindow:
         ttk.Label(train_controls, text="Temporal context (simulated seconds)").pack(side="left")
         self.context_seconds = tk.StringVar(value="600")
         ttk.Entry(train_controls, textvariable=self.context_seconds, width=8).pack(side="left", padx=10)
-        self.train_button = ttk.Button(train_controls, text="Train & evaluate on target houses", command=lambda: self._safe(self.train))
+        self.train_button = ttk.Button(train_controls, text="Train & compare RF + Gradient Boosting", command=lambda: self._safe(self.train))
         self.train_button.pack(side="left", padx=10)
-        ttk.Label(frame, text="Results compare predictions against labelled activities. Confidence is not measured accuracy.",
+        ttk.Label(frame, text=("Results compare predictions against labelled activities. Confidence is not measured accuracy. "
+                              "Compare on source validation; reserve target sessions for final transfer evaluation."),
                   wraplength=990).grid(row=4, column=0, columnspan=3, sticky="ew", pady=8)
         report_frame = ttk.Frame(frame)
         report_frame.grid(row=5, column=0, columnspan=3, sticky="nsew")
@@ -531,7 +615,7 @@ class LearnedHARWindow:
                 break
         self._update_session_summary()
         self._set_report("Synthetic demonstration only: these activities and observations were generated by a script.\n"
-                         "Click Train & evaluate to try the pipeline. Results do not measure performance on real people.\n"
+                         "Click Train & compare RF + Gradient Boosting to try the pipeline. Results do not measure performance on real people.\n"
                          "Repeating this button replaces the same demo sessions; it does not change your recorded houses.")
         self.status.set(f"Added {len(sessions)} synthetic demo sessions. The current house and active model are unchanged.")
 
@@ -589,6 +673,8 @@ class LearnedHARWindow:
         threading.Thread(target=work, name="learned-har-experiment", daemon=True).start()
 
     def train(self):
+        if self._busy:
+            raise ValueError("An experiment is already running.")
         source_id = self.source_houses.get(self.source.get())
         if not source_id:
             raise ValueError("Record and save source sessions first.")
@@ -598,14 +684,22 @@ class LearnedHARWindow:
             raise ValueError("Temporal context must be a positive number of seconds.") from None
         if not 0 < seconds <= 86400:
             raise ValueError("Temporal context must be between 0 and 86400 seconds.")
+        source_label = training_house_name(self.ctx, self.sessions, source_id, edited_name=self.house_name.get())
+        chosen_name = ask_model_name(self.window, initial_name=suggested_model_name(source_label, source_id),
+                                     existing_names=self.model_names.values())
+        if chosen_name is None:
+            self.status.set("Training cancelled.")
+            return
+        chosen_name = validate_model_name(chosen_name, self.model_names.values())
         storage = self.storage
 
         def job():
-            from har.learning import train_source, evaluate_model
+            from har.learning import train_comparison, evaluate_model
             sessions = storage.list_sessions()
-            model = train_source(sessions, source_id, window_seconds=seconds, seed=42)
-            model["source_house_label"] = _source_house_names(sessions)[source_id]
-            model["display_name"] = model_display_names([*storage.list_models(), model], sessions)[model["model_id"]]
+            validate_model_name(chosen_name, model_display_names(storage.list_models(), sessions).values())
+            model = train_comparison(sessions, source_id, window_seconds=seconds, seed=42)
+            model["source_house_label"] = source_label
+            model["display_name"] = chosen_name
             storage.save_model(model)
             report = evaluate_model(model, sessions)
             path = storage.DATA_DIR / "reports" / f"{model['model_id']}_evaluation.json"
@@ -619,7 +713,16 @@ class LearnedHARWindow:
                 if model_id == model["model_id"]:
                     self.model.set(choice)
             source_report = model.get("source_test_metrics")
-            prefix = "Model saved. Activate it below to use learned recognition in this house.\n\n"
+            prefix = "Comparison saved: Random Forest + Gradient Boosting. Activate it below for side-by-side recognition.\n\n"
+            count = model.get("pir_context_training_samples", 0)
+            prefix += f"PIR object context observed in {count}/{model['training_samples']} labelled training observations.\n"
+            if not count:
+                prefix += ("These training recordings contain no observed PIR object context. Record new sessions "
+                           "with oriented PIRs covering classified objects to learn this context.\n")
+            prefix += "\n"
+            validation_report = model.get("source_validation_metrics")
+            if validation_report:
+                prefix += "Source validation (model comparison):\n" + format_evaluation(validation_report) + "\n\n"
             if source_report:
                 prefix += "Source hold-out:\n" + format_evaluation(source_report) + "\n\nTarget evaluation:\n"
             self._set_report(prefix + format_evaluation(report) + f"\n\nReport: {path}")

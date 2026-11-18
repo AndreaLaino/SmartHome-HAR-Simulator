@@ -41,7 +41,7 @@ schede: **1 · Categories**, **2 · Record sessions**, **3 · Train & evaluate**
    aggiunte sessioni generate da uno script per la casa `demo-source` e per
    `demo-target`. Non sono registrazioni della casa aperta.
 4. Lascia selezionata la sorgente **Demo: Oven / TV** e premi
-   **Train & evaluate on target houses**. Attendi il risultato e annota il nome del
+   **Train & compare RF + Gradient Boosting**. Attendi il risultato e annota il nome del
    modello in **Saved model**. I dati destinatari vengono usati per il test,
    non per l'addestramento.
 5. Apri da **File → Open file**
@@ -164,32 +164,111 @@ sessioni scegliendo **target**. Etichettale nello stesso modo: queste etichette
 servono soltanto a verificare le predizioni. Non vengono usate per addestrare.
 
 In **Train & evaluate**, aggiorna con **Refresh sessions / models**, scegli la
-casa sorgente e premi **Train & evaluate on target houses**. **Temporal context**
+casa sorgente e premi **Train & compare RF + Gradient Boosting**. **Temporal context**
 è la durata della storia osservata in secondi simulati: `600` significa 10 minuti.
-Leggi accuratezza, F1 e risultati per attività; senza dati target etichettati non
+Leggi accuratezza, precision, recall, F1 e coverage di entrambi gli algoritmi;
+senza dati target etichettati non
 si può misurare il trasferimento.
+
+Il training crea una coppia Random Forest / Gradient Boosting con gli stessi
+ingressi, la stessa finestra temporale e le stesse sessioni separate per training,
+validazione e test. Ogni algoritmo impara un classificatore binario per attività,
+con soglia di decisione `0.5` e confidenza minima `0.55`, senza ottimizzarle sui
+dati target. I parametri dei due algoritmi sono fissi e salvati insieme al seed
+e alla versione di scikit-learn: questa è una prova di confronto, non una ricerca
+automatica del modello migliore. Addestrare entrambi richiede più tempo.
+Per scegliere tra gli algoritmi usa la validazione della casa sorgente, mostrata
+nel report. Mantieni le sessioni target per la verifica finale del trasferimento,
+senza usarle per scegliere parametri o soglie.
 
 Nella casa destinataria seleziona il modello salvato e premi **Activate in this
 house**. Salva lo scenario. Le nuove osservazioni vengono elaborate con quel
 modello senza riaddestrarlo. **Evaluate selected model on target sessions**
 permette di valutare altre sessioni target mantenendo lo stesso modello.
 
-Nell'interfaccia i modelli hanno nomi come `House_A_2026-10-28_001`: nome della
-casa sorgente, data locale di creazione e numero progressivo per quel nome/data.
-Lo stesso nome compare nello stato del modello attivo. Per i vecchi modelli,
+Attivando la nuova coppia, in Manual compaiono due colonne in basso a destra:
+**Random Forest** a sinistra e **Gradient Boosting** a destra. Entrambe ricevono
+le stesse osservazioni nello stesso istante simulato. Le intestazioni restano
+visibili anche senza un confronto attivo. Con un vecchio modello solo Random
+Forest, la colonna Gradient Boosting indica di attivare un confronto salvato;
+non mostra una predizione finché quel classificatore non è attivo. I vecchi
+modelli rimangono utilizzabili singolarmente. L'Activity Log esistente conserva gli intervalli
+della Random Forest; il log `har_comparison.jsonl` conserva le predizioni di entrambi.
+
+Prima del training compare una finestra per scegliere il nome del confronto.
+Il campo propone `NomeCasa_[IDcasa]_YYYY-MM-DD_`, usando il nome della casa
+sorgente selezionata, i primi otto caratteri del suo ID persistente e la data
+locale. Per esempio: `Casa_A_[3c5e83fe]_2026-11-18_`. L'ID è quello della casa,
+condiviso tra le sue sessioni, non quello della singola registrazione. Se il nome
+HAR è ancora il generico `House`, viene usato il nome del file dello scenario
+aperto quando appartiene alla stessa casa sorgente. Il cursore è alla fine:
+puoi aggiungere una descrizione oppure
+cancellare tutto e scrivere un nome completamente diverso. **Train & save**
+avvia il training e salva la coppia con quel nome; **Cancel** chiude la finestra
+senza avviare il calcolo. I nomi vuoti o già utilizzati vengono segnalati per
+evitare selezioni ambigue. Il nome scelto compare nel selettore e nello stato
+del modello attivo.
+
+I vecchi modelli mantengono i propri nomi, come `House_A_2026-10-28_001`.
+Quando manca un nome salvato, viene generato da casa sorgente, data e numero
+progressivo. Per i vecchi modelli,
 quando manca il nome della casa nei metadati, viene recuperato dalle registrazioni
 sorgenti. Se queste informazioni non sono disponibili, il nome indica
 `Unknown_house` o `undated`. UUID, file JSON e riferimenti negli scenari restano
 invariati; i nuovi modelli salvano anche nome leggibile e nome della casa sorgente.
 
-La confidenza mostrata deriva dai voti della Random Forest e **non è calibrata**:
+La confidenza mostrata da entrambi gli algoritmi **non è calibrata**
+(per Random Forest deriva dai voti degli alberi):
 non equivale alla probabilità garantita che la predizione sia corretta, né
 all'accuratezza misurata sui dati etichettati. Un modello incerto può astenersi.
 
+## Contesto degli oggetti nel campo dei PIR
+
+Le nuove registrazioni salvano per ogni PIR le categorie degli oggetti compresi
+nel suo campo di rilevazione. Il controllo usa portata e apertura del simulatore
+(`230` unità logiche e `60°`), orientamento, muri e porte chiuse. Un oggetto viene
+incluso se il suo punto di posizionamento nella mappa è visibile nel campo; non
+si usa la distanza minima da tutti gli oggetti della stanza.
+
+Il modello riceve così ingressi distinti di presenza per gli oggetti coperti:
+dispositivi da cottura, intrattenimento, sedute, letti e altre categorie del
+dizionario. Non occorre dividere l'ambiente in zone o assegnare attività ai PIR.
+Nomi e coordinate servono a ricavare le relazioni nella singola casa, ma non
+diventano ingressi del classificatore. Il metodo non usa la posizione dell'avatar
+per determinare quale oggetto la persona stia utilizzando.
+
+Un PIR che copre più categorie contribuisce a tutte, conservando l'ambiguità.
+Più oggetti della stessa categoria non moltiplicano il peso di quel PIR. Lo stato
+viene aggregato per categoria insieme a indicatori di disponibilità e misura
+osservata; il modello mantiene le statistiche temporali anche su questi ingressi.
+Le relazioni vengono congelate a ogni osservazione: cambiamenti successivi della
+scena non riscrivono il training e una porta aperta o chiusa può cambiare la
+copertura delle osservazioni successive.
+
+Per provarlo:
+
+1. Assegna categorie corrette agli oggetti e controlla i campi visivi dei PIR.
+2. Registra almeno tre nuove simulazioni sorgenti indipendenti, con esempi di
+   presenza senza attività e apparecchi accesi mentre la persona è altrove.
+3. Addestra la coppia e controlla la riga **PIR object context observed in N/M
+   labelled training observations**. Se `N` è zero, il training non dispone di
+   questi segnali: verifica orientamento, copertura e registrazioni utilizzate.
+4. Attiva il nuovo confronto e valuta una casa destinataria indipendente, senza
+   usarne le etichette per scegliere ingressi o parametri.
+
+Le registrazioni precedenti non contengono questo contesto: non viene ricostruito
+usando la casa aperta, perché mancano orientamenti e ostacoli congelati. Una
+geometria sconosciuta, un campo noto senza oggetti e una lettura mancante restano
+distinti. I nuovi modelli usano lo schema degli ingressi versione 2; i vecchi
+modelli restano utilizzabili con il loro schema originale. Riaddestrare sui soli
+dati precedenti non insegna il nuovo contesto. Più informazione disponibile non
+garantisce maggiore accuratezza: va verificata con il confronto sperimentale tra
+modalità previsto da WP3/E4 del progetto teorico.
+
 ## Attività simultanee e dizionario condiviso
 
-I nuovi modelli addestrano una Random Forest binaria indipendente per ogni
-attività. Ogni albero confronta tutti gli ingressi quando sceglie una divisione:
+I nuovi confronti addestrano una Random Forest e un Gradient Boosting binari
+indipendenti per ogni attività. Ogni albero confronta tutti gli ingressi quando sceglie una divisione:
 il segnale più informativo per quell'attività non viene escluso da un sottoinsieme
 casuale dei canali di categoria. Non esistono associazioni manuali sensore-attività;
 sono i dati etichettati della sorgente a determinare le divisioni degli alberi.
@@ -235,8 +314,9 @@ una misura in chilogrammi.
 | `har_data/catalogue.json` | Dizionario globale delle categorie e valori predefiniti per tipo. |
 | `har_data/sessions/` | Osservazioni, etichette e dizionario congelato di ogni registrazione. |
 | `har_data/activities.json` | Nomi personalizzati dei pulsanti attività, condivisi tra case. |
-| `har_data/models/` | Modelli addestrati e relativa configurazione. |
-| `har_data/reports/` | Risultati della valutazione. |
+| `har_data/models/` | Coppie di modelli addestrati, configurazione, seed, parametri e impronte delle sessioni sorgenti; anche i modelli precedenti sono conservati. |
+| `har_data/reports/` | Metriche e predizioni per algoritmo, con validazione, test sorgente e test target distinti. |
+| `saves/<sessione>/har_comparison.jsonl` | Previsioni affiancate con tempo simulato, ID della coppia e dei modelli, attività e incertezze. `expected` contiene le etichette umane solo durante una registrazione, altrimenti `null`. |
 | Scenario `.csv` | Pianta, oggetti, identità della casa, categorie personalizzate e ID del modello attivo. |
 
 Il CSV contiene l'ID del modello, non tutti i suoi dati. Per spostare il progetto

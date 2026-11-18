@@ -25,6 +25,21 @@ instructions and experiment results in the relevant documentation.
 - Read-only investigation and checks can proceed while clarifying the plan.
   Do not repeatedly request permission for work already authorized.
 
+## Theory and design consistency
+
+- Before proposing or implementing changes, read the relevant sections of the
+  documents in `theory/`, including its subfolders, and check that the proposed
+  behavior is consistent with them.
+- Use [Progetto_HAR_generalizzabile_Digital_Twin_semantico (2).pdf](<theory/Progetto_HAR_generalizzabile_Digital_Twin_semantico (2).pdf>)
+  as the primary design reference for implementation. Use the other theory
+  documents as supporting references. If the documents differ, prioritize this
+  project document.
+- Verify the relevant implementation and tests against those requirements.
+  Explain any discrepancies or conflicts with the requested behavior explicitly;
+  current user instructions take precedence for authorized deviations.
+- Keep this check within the agreed task scope. Report unrelated inconsistencies
+  without changing them, and state any remaining relevant deviations at handoff.
+
 ## Safe cleanup
 
 - No imports or search references does **not** prove a file is useless. Check

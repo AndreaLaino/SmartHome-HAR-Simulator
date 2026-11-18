@@ -14,6 +14,7 @@ from models import is_fixture
 
 
 ROOMS = ("unknown", "kitchen", "livingroom", "bedroom", "bathroom", "office", "hallway", "diningroom", "laundry", "other")
+FEATURE_SCHEMA_VERSION = 2
 
 
 def number(value, default=0.0):
@@ -44,7 +45,9 @@ def _room_at(obj, rooms):
     return "unknown"
 
 
-def primitive_names(catalogue):
+def primitive_names(catalogue, *, schema_version=FEATURE_SCHEMA_VERSION):
+    if type(schema_version) is not int or schema_version not in (1, FEATURE_SCHEMA_VERSION):
+        raise ValueError("Unsupported HAR feature schema version.")
     names = []
     for category in sorted(catalogue["device_categories"]):
         names.extend(f"device/{category}/{key}" for key in
@@ -52,6 +55,10 @@ def primitive_names(catalogue):
     for category in sorted(catalogue["sensor_categories"]):
         names.extend(f"sensor/{category}/{key}" for key in ("available", "observed", "value", "normalized"))
         names.extend(f"room/{room}/{category}/{key}" for room in ROOMS for key in ("observed", "normalized"))
+    if schema_version >= 2:
+        names.extend(("pir_context/recorded", "pir_context/geometry_observed"))
+        for category in sorted(catalogue["device_categories"]):
+            names.extend(f"pir_context/{category}/{key}" for key in ("available", "observed", "normalized"))
     return names
 
 
@@ -72,7 +79,7 @@ def _known_categories(obj, kind, catalogue):
     return categories_for(obj, kind, catalogue)
 
 
-def primitives(frame, catalogue):
+def primitives(frame, catalogue, *, schema_version=FEATURE_SCHEMA_VERSION):
     """Aggregate current readings by category, with a frozen source schema."""
     pools = defaultdict(list)
     device_power = defaultdict(list)
@@ -127,18 +134,47 @@ def primitives(frame, catalogue):
             if power is not None:
                 pools[f"{key}/power_w"].append(max(0.0, power))
                 pools[f"{key}/power_fraction"].append(max(0.0, power) / rated if rated > 0 else 0.0)
-    return [sum(pools[name]) / len(pools[name]) if pools[name] else 0.0 for name in primitive_names(catalogue)]
+    if schema_version >= 2:
+        from har.pir_context import validate_context
+
+        context = validate_context(frame, catalogue, allow_extra_categories=True)
+        pools["pir_context/recorded"].append(float(context is not None))
+        if context is not None:
+            for sensor in frame.get("sensors", []):
+                if str(sensor["type"]).upper() != "PIR":
+                    continue
+                if not any(catalogue["sensor_categories"][category]["measurement"] == "presence"
+                           for category in _known_categories(sensor, "sensor", catalogue)):
+                    continue
+                categories = context["coverage"][sensor["name"]]
+                pools["pir_context/geometry_observed"].append(float(categories is not None))
+                if categories is None:
+                    continue
+                data = observations.get(sensor["name"], {})
+                # Explicitly missing presence is unknown, never a cached ON/OFF.
+                value = latest(data, "state") if "state" in data else number(sensor.get("state"), None)
+                for category in dict.fromkeys(category_name(name, "device", catalogue) for name in categories):
+                    if category not in catalogue["device_categories"]:
+                        continue
+                    key = f"pir_context/{category}"
+                    pools[f"{key}/available"].append(1.0)
+                    pools[f"{key}/observed"].append(float(value is not None))
+                    if value is not None:
+                        pools[f"{key}/normalized"].append(_normalized(value, sensor))
+    return [sum(pools[name]) / len(pools[name]) if pools[name] else 0.0
+            for name in primitive_names(catalogue, schema_version=schema_version)]
 
 
 class FeatureEncoder:
     """Independent history per simulation/session; elapsed units are sim seconds."""
 
-    def __init__(self, catalogue, window_seconds=600.0):
+    def __init__(self, catalogue, window_seconds=600.0, *, schema_version=FEATURE_SCHEMA_VERSION):
         self.catalogue = catalogue
         self.window_seconds = number(window_seconds, 0)
         if self.window_seconds <= 0:
             raise ValueError("The observation window must be positive simulated seconds.")
-        self.names = primitive_names(catalogue)
+        self.schema_version = schema_version
+        self.names = primitive_names(catalogue, schema_version=schema_version)
         self.feature_names = [f"{name}/{stat}" for name in self.names
                               for stat in ("latest", "mean", "changes", "age_since_change")]
         self.feature_names.append("observed_window_seconds")
@@ -149,7 +185,7 @@ class FeatureEncoder:
         now = number(frame.get("time_seconds"), -1)
         if now < 0 or (self.history and now < self.history[-1][0]):
             raise ValueError("Observation timestamps must be finite, nonnegative and ordered.")
-        values = primitives(frame, self.catalogue)
+        values = primitives(frame, self.catalogue, schema_version=self.schema_version)
         if not self.history:
             self.last_change = [now] * len(values)
         else:
@@ -181,8 +217,8 @@ class FeatureEncoder:
         return vector
 
 
-def encode_session(session, catalogue, window_seconds):
-    encoder = FeatureEncoder(catalogue, window_seconds)
+def encode_session(session, catalogue, window_seconds, *, schema_version=FEATURE_SCHEMA_VERSION):
+    encoder = FeatureEncoder(catalogue, window_seconds, schema_version=schema_version)
     rows = []
     for frame in session.get("frames", []):
         vector = encoder.update(frame)

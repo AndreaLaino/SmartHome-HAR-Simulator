@@ -3,7 +3,7 @@ import tkinter as tk
 
 from timer import TimerApp
 from sim import start_simulation, interaction, update_sensors, render_simulation_state
-from activity import monitor_activities, process_activities, close_current_activity
+from activity import monitor_activities, process_activities, close_current_activity, reset_activity_display
 from log import start_interaction_log_session, stop_interaction_log_session
 from app.context import AppContext
 from app.logging_setup import setup_logging
@@ -76,7 +76,7 @@ def _cleanup_manual_sim(ctx: AppContext, expected_timer=None):
         ctx.simulation_menu.entryconfig("Manual", state="normal")
     if hasattr(ctx, 'activity_label') and ctx.activity_label is not None:
         try:
-            ctx.activity_label.config(text="Activity: None")
+            reset_activity_display(ctx.activity_label)
         except:
             pass
 
@@ -137,7 +137,7 @@ def start_sim(ctx: AppContext):
     # Clean up previous widgets if they exist
     if hasattr(ctx, 'activity_label') and ctx.activity_label is not None:
         try:
-            ctx.activity_label.config(text="Activity: None")
+            reset_activity_display(ctx.activity_label)
         except:
             pass
 
@@ -192,14 +192,14 @@ def start_sim(ctx: AppContext):
             logger.warning("Unable to set Smart Meter mode: %s", e)
         runtime_initialized = True
         _bind_canvas_click()
-        start_simulation(ctx.canvas, timer_app_instance, ctx.activity_label, ctx.house_state, runtime_sources)
-        monitor_activities(ctx.canvas, ctx.activity_label, timer_app_instance, sensor_states_store, ctx.house_state, runtime_sources)
         interaction_state = ctx.house_state.interaction_log_state()
         if interaction_state.get("interaction_file") is None:
             start_interaction_log_session(
                 ctx.house_state,
                 timer_app_instance.get_simulated_time(),
             )
+        start_simulation(ctx.canvas, timer_app_instance, ctx.activity_label, ctx.house_state, runtime_sources)
+        monitor_activities(ctx.canvas, ctx.activity_label, timer_app_instance, sensor_states_store, ctx.house_state, runtime_sources)
 
     def _on_pause():
         # Do not erase Select/placement bindings if the timer is paused while
@@ -258,15 +258,8 @@ def start_sim(ctx: AppContext):
     ctx._restore_manual_canvas_binding = _restore_canvas_binding
 
     if not hasattr(ctx, 'activity_label') or ctx.activity_label is None:
-        ctx.activity_label = tk.Label(
-            ctx.activity_frame, text="Activity: None", font=("Helvetica", 14), bg="white", fg="black",
-            wraplength=360, justify=tk.LEFT, anchor="w",
-        )
-        ctx.activity_label.pack(pady=2, padx=10, fill=tk.BOTH, expand=True)
-        ctx.activity_label.bind(
-            "<Configure>",
-            lambda event: event.widget.configure(wraplength=max(1, event.width - 12)),
-        )
+        from app.ui.activity_comparison import ActivityComparisonLabel
+        ctx.activity_label = ActivityComparisonLabel(ctx.activity_frame)
 
     apply_theme = getattr(ctx, "_apply_theme", None)
     if callable(apply_theme):

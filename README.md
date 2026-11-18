@@ -64,8 +64,10 @@ meal-time and entry/exit rules have been removed from `activity.py`; it manages
 model predictions, activity intervals and polling.
 
 Open **Scenario > Learned activity recognition…** to assign shared object
-categories, record observations with human activity labels, and train a Random
-Forest for each activity on a source house. The same model can recognize activities in other
+categories, record observations with human activity labels, and compare Random
+Forest with Gradient Boosting on a source house. Both train one binary classifier
+per activity, using identical features and source session splits. The saved
+comparison can recognize activities in other
 houses through category-based measurements; there is no manual device-to-activity
 transfer rule. A category alone never starts an activity, and learned recognition
 requires an activated trained model.
@@ -79,6 +81,18 @@ and state are unobserved, not a measured OFF; an explicitly missing sample canno
 reuse a cached wattage. Internal electrical state is excluded from new HAR
 recordings and ignored in older ones. Retrain earlier models for experiments
 that relied on internal power or ON/OFF; saved meter recordings can be reused.
+
+New recordings also freeze the categories of objects covered by each PIR's
+field of view. Coverage uses the same range, direction, walls and closed doors
+as the simulator, checking each object's logical centre. HAR gains separate
+presence channels for covered object categories, including appliances, seating
+and beds, even in a single room. IDs and absolute coordinates are not model
+inputs, and coverage does not automatically assign an activity. Overlapping
+fields retain every visible category instead of guessing which object is used.
+Record new independent source sessions and retrain to use these channels;
+earlier recordings lack the coverage snapshots and are treated as unknown.
+The training report shows how many labelled training observations have PIR
+object context. Older saved models retain their original feature schema.
 
 For quick recording, click the **graduation hat** in the left toolbar. A panel
 below the map offers activity buttons, **No activity (idle)**, **Add activity**,
@@ -110,7 +124,25 @@ sessions are reserved for evaluation. **Add synthetic demo sessions** offers a
 scripted trial whose results do not measure accuracy on real people. Model vote
 confidence is uncalibrated and differs from measured test accuracy.
 
-New models use independent binary activity classifiers (one forest per label).
+**Train & compare RF + Gradient Boosting** saves both models under one selection.
+Before training, choose the comparison's name in a dialog. It suggests
+`SourceHouse_[houseID]_YYYY-MM-DD_`, using the first eight characters of the
+selected source house ID. A generic `House` label uses the open scenario's file
+name when it belongs to that source. The cursor starts at the end; append a description or
+replace the complete text. Cancel leaves training unstarted. Empty or already
+used names are rejected; earlier saved models keep their names.
+Activate that comparison to see Random Forest on the left and Gradient Boosting
+on the right in Manual mode. Earlier saved forest models still work individually.
+Training runs in the background; fitting two algorithms takes more time than one.
+The JSON report in `har_data/reports/` contains precision, recall, F1 and coverage
+for both models, with source hold-out and target results kept separate. Model
+files preserve source session fingerprints, seed, parameters and sklearn version.
+Paired live predictions, simulated time, model IDs, and any current recording
+labels are appended to `saves/<session>/har_comparison.jsonl`. Without a labelled
+recording the expected activity is `null`; predictions are never treated as truth.
+The existing Activity Log continues to show Random Forest activity intervals.
+
+New models use independent binary activity classifiers (one per label and algorithm).
 Each tree can compare all input features when selecting its splits, so a strong
 sensor signal is not excluded by a random subset of the sparse category channels.
 Each activity has its own confidence and abstention decision: an uncertain label

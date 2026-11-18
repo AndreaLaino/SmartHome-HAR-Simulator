@@ -2,7 +2,7 @@
 
 Models contain portable JSON trees. Category names define measurements, not
 activity rules; activity classes come exclusively from labelled source examples.
-New models fit independent forests; original joint JSON models remain readable.
+Activities use independent binary classifiers; original JSON models remain readable.
 """
 
 from __future__ import annotations
@@ -16,8 +16,18 @@ from datetime import datetime, timezone
 from uuid import uuid4
 
 from har.catalogue import validate_catalogue, validate_catalogue_compatibility
-from har.features import FeatureEncoder, encode_session
+from har.features import FEATURE_SCHEMA_VERSION, FeatureEncoder, encode_session
 from har.storage import safe_identifier, validate_session
+
+
+ALGORITHM_NAMES = {"random_forest": "Random Forest", "gradient_boosting": "Gradient Boosting"}
+COMPARISON_KIND = "activity_model_comparison"
+_SHARED_FIELDS = (
+    "source_house_id", "catalogue", "labels", "feature_names", "window_seconds", "seed",
+    "source_training_sessions", "source_validation_sessions", "source_test_sessions",
+    "source_session_fingerprints", "source_simulation_ids", "source_observation_fingerprints",
+    "training_provenance", "training_samples",
+)
 
 
 def _fingerprint(value):
@@ -62,6 +72,19 @@ def _export_forest(forest, label_count):
     return result
 
 
+def _export_boosting(estimator):
+    """Export binary log-loss boosting without pickles or sklearn at inference."""
+    probability = float(estimator.init_.class_prior_[1])
+    trees = []
+    for stage in estimator.estimators_:
+        tree = stage[0].tree_
+        trees.append({"left": tree.children_left.tolist(), "right": tree.children_right.tolist(),
+                      "feature": tree.feature.tolist(), "threshold": tree.threshold.tolist(),
+                      "values": tree.value[:, 0, 0].tolist()})
+    return {"trees": trees, "initial_log_odds": math.log(probability / (1 - probability)),
+            "learning_rate": float(estimator.learning_rate), "threshold": .5, "minimum_certainty": .55}
+
+
 def validate_model(model):
     try:
         return _validate_model(model)
@@ -72,6 +95,7 @@ def validate_model(model):
 def _validate_model(model):
     if not isinstance(model, dict) or (model.get("schema_version"), model.get("kind")) not in {
         (1, "category_random_forest"), (2, "independent_category_random_forest"),
+        (2, "independent_gradient_boosting"), (3, COMPARISON_KIND),
     }:
         raise ValueError("This is not a learned category-based HAR model.")
     safe_identifier(model.get("model_id"))
@@ -97,9 +121,28 @@ def _validate_model(model):
     for key in ("source_simulation_ids", "source_observation_fingerprints"):
         if not isinstance(model.get(key), list) or not model[key] or any(not isinstance(value, str) for value in model[key]):
             raise ValueError("The model must preserve independent source-session provenance.")
-    encoder = FeatureEncoder(catalogue, model.get("window_seconds"))
+    encoder = FeatureEncoder(catalogue, model.get("window_seconds"), schema_version=model.get("feature_schema_version", 1))
     if model.get("feature_names") != encoder.feature_names:
         raise ValueError("Model input schema does not match its category dictionary.")
+    if model["kind"] == COMPARISON_KIND:
+        models = model.get("models")
+        if not isinstance(models, dict) or set(models) != set(ALGORITHM_NAMES):
+            raise ValueError("A comparison needs both Random Forest and Gradient Boosting.")
+        identities = {model["model_id"]}
+        for algorithm, kind in (("random_forest", "independent_category_random_forest"),
+                                ("gradient_boosting", "independent_gradient_boosting")):
+            child = models[algorithm]
+            if not isinstance(child, dict) or child.get("kind") != kind:
+                raise ValueError("Invalid comparison algorithm.")
+            validate_model(child)
+            if child.get("feature_schema_version", 1) != model.get("feature_schema_version", 1):
+                raise ValueError("Compared models must use the same feature schema version.")
+            if any(field not in model or child.get(field) != model[field] for field in _SHARED_FIELDS):
+                raise ValueError("Compared models must use identical source splits and feature schemas.")
+            if child["model_id"] in identities:
+                raise ValueError("Compared models must have distinct identities.")
+            identities.add(child["model_id"])
+        return model
     if model["schema_version"] == 1:
         detectors = [(model, len(labels))]
     else:
@@ -114,19 +157,27 @@ def _validate_model(model):
             value = detector.get(field)
             if not isinstance(value, (int, float)) or not math.isfinite(value) or not 0 <= value <= 1:
                 raise ValueError(f"Invalid model {field}.")
-        _validate_forest(detector.get("trees"), len(encoder.feature_names), output_count)
+        boosting = model["kind"] == "independent_gradient_boosting"
+        if boosting:
+            initial, rate = detector.get("initial_log_odds"), detector.get("learning_rate")
+            if not isinstance(initial, (int, float)) or not math.isfinite(initial):
+                raise ValueError("Invalid boosting initial log odds.")
+            if not isinstance(rate, (int, float)) or not math.isfinite(rate) or not 0 < rate <= 1:
+                raise ValueError("Invalid boosting learning rate.")
+        _validate_forest(detector.get("trees"), len(encoder.feature_names), output_count, regression=boosting)
     return model
 
 
-def _validate_forest(trees, feature_count, output_count):
+def _validate_forest(trees, feature_count, output_count, *, regression=False):
     if not isinstance(trees, list) or not trees:
         raise ValueError("The model has no trained trees.")
     for tree in trees:
+        value_key = "values" if regression else "positive"
         if not isinstance(tree, dict) or any(not isinstance(tree.get(key), list)
-                                             for key in ("left", "right", "feature", "threshold", "positive")):
+                                             for key in ("left", "right", "feature", "threshold", value_key)):
             raise ValueError("Invalid trained tree arrays.")
         size = len(tree.get("left", []))
-        if not size or any(len(tree.get(key, [])) != size for key in ("right", "feature", "threshold", "positive")):
+        if not size or any(len(tree.get(key, [])) != size for key in ("right", "feature", "threshold", value_key)):
             raise ValueError("Invalid trained tree arrays.")
         for index in range(size):
             left, right = tree["left"][index], tree["right"][index]
@@ -138,8 +189,11 @@ def _validate_forest(trees, feature_count, output_count):
             if left != -1 and (not 0 <= left < size or not 0 <= right < size
                                or not 0 <= tree["feature"][index] < feature_count):
                 raise ValueError("Invalid trained tree input or child index.")
-            values = tree["positive"][index]
-            if not isinstance(values, list) or len(values) != output_count or any(not isinstance(v, (int, float)) or not math.isfinite(v) or not 0 <= v <= 1 for v in values):
+            values = tree[value_key][index]
+            if regression:
+                if not isinstance(values, (int, float)) or not math.isfinite(values):
+                    raise ValueError("Invalid boosting tree values.")
+            elif not isinstance(values, list) or len(values) != output_count or any(not isinstance(v, (int, float)) or not math.isfinite(v) or not 0 <= v <= 1 for v in values):
                 raise ValueError("Invalid trained probabilities.")
             if not isinstance(tree["threshold"][index], (int, float)) or not math.isfinite(tree["threshold"][index]):
                 raise ValueError("Invalid tree threshold.")
@@ -156,6 +210,13 @@ def _validate_forest(trees, feature_count, output_count):
 
 
 def predict_vector(model, vector):
+    if model.get("kind") == COMPARISON_KIND:
+        predictions = {algorithm: predict_vector(child, vector) for algorithm, child in model["models"].items()}
+        # Existing interval consumers retain the RF result; both predictions
+        # remain available to the comparison display and synchronized log.
+        return {**predictions["random_forest"], "comparisons": predictions,
+                "comparison_model_id": model["model_id"],
+                "model_ids": {algorithm: child["model_id"] for algorithm, child in model["models"].items()}}
     if len(vector) != len(model["feature_names"]) or any(not math.isfinite(value) for value in vector):
         raise ValueError("Observation features do not match the trained model.")
     # sklearn fits and traverses trees using float32 inputs; use the same
@@ -165,11 +226,13 @@ def predict_vector(model, vector):
         vector = np.asarray(vector, dtype=np.float32).tolist()
     if any(not math.isfinite(value) for value in vector):
         raise ValueError("Observation features exceed the model's numeric range.")
-    if model.get("kind") == "independent_category_random_forest":
+    if model.get("kind") in {"independent_category_random_forest", "independent_gradient_boosting"}:
+        boosting = model["kind"] == "independent_gradient_boosting"
         scores, confidences, uncertain, activities = {}, {}, [], []
         for label in model["labels"]:
             detector = model["classifiers"][label]
-            probability = _forest_probabilities(detector["trees"], vector, 1)[0]
+            probability = (_boosting_probability(detector, vector) if boosting
+                           else _forest_probabilities(detector["trees"], vector, 1)[0])
             scores[label] = probability
             certainty = confidences[label] = max(probability, 1 - probability)
             if certainty + 1e-12 < detector["minimum_certainty"]:
@@ -178,9 +241,10 @@ def predict_vector(model, vector):
                 activities.append(label)
         status = "ready" if not uncertain else ("uncertain" if len(uncertain) == len(scores) else "partial")
         return {"activities": activities, "probabilities": scores, "activity_confidences": confidences,
+                "algorithm": "gradient_boosting" if boosting else "random_forest",
                 "uncertain_activities": uncertain, "confidence": min(confidences.values()),
                 "abstained": bool(uncertain), "status": status,
-                "message": "Independent activity predictions (uncalibrated forest votes)."}
+                "message": "Independent activity predictions (uncalibrated model confidence)."}
     # Preserve the original joint model's whole-set abstention semantics.
     probabilities = _forest_probabilities(model["trees"], vector, len(model["labels"]))
     scores = dict(zip(model["labels"], probabilities))
@@ -188,20 +252,36 @@ def predict_vector(model, vector):
     abstained = confidence + 1e-12 < model["minimum_certainty"]
     activities = [label for label, probability in scores.items() if probability >= model["threshold"]]
     return {"activities": [] if abstained else activities, "probabilities": scores, "confidence": confidence,
+            "algorithm": "random_forest",
             "abstained": abstained, "status": "uncertain" if abstained else "ready",
             "message": "Model uncertain." if abstained else "Trained model prediction (uncalibrated forest votes)."}
+
+
+def _leaf_index(tree, vector):
+    index, visited = 0, 0
+    while tree["left"][index] != -1:
+        visited += 1
+        if visited > len(tree["left"]):
+            raise ValueError("Invalid cycle in trained tree.")
+        feature = tree["feature"][index]
+        index = tree["left"][index] if vector[feature] <= tree["threshold"][index] else tree["right"][index]
+    return index
+
+
+def _boosting_probability(detector, vector):
+    raw = detector["initial_log_odds"]
+    for tree in detector["trees"]:
+        raw += detector["learning_rate"] * tree["values"][_leaf_index(tree, vector)]
+    if raw >= 0:
+        return 1 / (1 + math.exp(-raw))
+    exp = math.exp(raw)
+    return exp / (1 + exp)
 
 
 def _forest_probabilities(trees, vector, output_count):
     probabilities = [0.0] * output_count
     for tree in trees:
-        index, visited = 0, 0
-        while tree["left"][index] != -1:
-            visited += 1
-            if visited > len(tree["left"]):
-                raise ValueError("Invalid cycle in trained tree.")
-            feature = tree["feature"][index]
-            index = tree["left"][index] if vector[feature] <= tree["threshold"][index] else tree["right"][index]
+        index = _leaf_index(tree, vector)
         for column, value in enumerate(tree["positive"][index]):
             probabilities[column] += value / len(trees)
     return probabilities
@@ -211,7 +291,8 @@ def _score(model, sessions):
     expected, predicted, records = [], [], []
     for session in sessions:
         _check_dictionary(session, model["catalogue"])
-        names, rows = encode_session(session, model["catalogue"], model["window_seconds"])
+        names, rows = encode_session(session, model["catalogue"], model["window_seconds"],
+                                     schema_version=model.get("feature_schema_version", 1))
         if names != model["feature_names"]:
             raise ValueError("Session feature schema differs from the trained model.")
         for vector, labels in rows:
@@ -248,9 +329,12 @@ def _score(model, sessions):
             "predictions": records}
 
 
-def train_source(sessions, source_house_id, *, window_seconds=600, seed=42):
+def train_source(sessions, source_house_id, *, window_seconds=600, seed=42, algorithm="random_forest",
+                 feature_schema_version=FEATURE_SCHEMA_VERSION):
     """Fit on source sessions; target observations and labels are never inspected."""
     safe_identifier(source_house_id)
+    if algorithm not in ALGORITHM_NAMES:
+        raise ValueError("Unsupported HAR training algorithm.")
     source = [copy.deepcopy(session) for session in sessions
               if session.get("house_id") == source_house_id and session.get("partition") == "source"]
     if len(source) < 3:
@@ -271,33 +355,52 @@ def train_source(sessions, source_house_id, *, window_seconds=600, seed=42):
     held_out = max(1, len(source) // 5)
     training, validation, testing = source[2 * held_out:], source[:held_out], source[held_out:2 * held_out]
     catalogue = validate_catalogue(training[0]["catalogue"])
-    names = FeatureEncoder(catalogue, window_seconds).feature_names
+    names = FeatureEncoder(catalogue, window_seconds, schema_version=feature_schema_version).feature_names
     rows = []
     for session in training:
         _check_dictionary(session, catalogue)
-        _, encoded = encode_session(session, catalogue, window_seconds)
+        _, encoded = encode_session(session, catalogue, window_seconds, schema_version=feature_schema_version)
         rows.extend(encoded)
+    context_columns = [index for index, name in enumerate(names)
+                       if name.startswith("pir_context/") and name.endswith("/observed/latest")]
+    context_samples = sum(any(vector[index] > 0 for index in context_columns) for vector, _ in rows)
     labels = sorted({label for _, truth in rows for label in truth})
     if not labels:
         raise ValueError("Training sessions need labelled positive activities as well as explicit no-activity examples.")
     import numpy as np
-    from sklearn.ensemble import RandomForestClassifier
+    import sklearn
+    from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier
+    from sklearn.utils.class_weight import compute_sample_weight
     x = np.asarray([vector for vector, _ in rows], dtype=np.float32)
     y = np.asarray([[int(label in truth) for label in labels] for _, truth in rows], dtype=np.int8)
     if any(len(set(y[:, column])) < 2 for column in range(len(labels))):
         raise ValueError("Each training activity needs positive and negative examples. Label idle frames as No activity.")
     classifiers = {}
+    parameters = ({"n_estimators": 128, "max_depth": 12, "min_samples_leaf": 2,
+                   "max_features": 1.0, "class_weight": "balanced_subsample", "random_state": seed, "n_jobs": 1}
+                  if algorithm == "random_forest" else
+                  {"n_estimators": 128, "learning_rate": .1, "max_depth": 3,
+                   "min_samples_leaf": 2, "loss": "log_loss", "random_state": seed})
     for column, label in enumerate(labels):
         # With sparse category channels, random feature subsets can favor the
         # absence of another activity over this activity's own sensor evidence.
         # Let each binary tree compare every observed input at each split.
-        forest = RandomForestClassifier(n_estimators=128, max_depth=12, min_samples_leaf=2,
-                                        max_features=1.0, class_weight="balanced_subsample", random_state=seed, n_jobs=1)
-        forest.fit(x, y[:, column])
-        classifiers[label] = {"trees": _export_forest(forest, 1), "threshold": .5, "minimum_certainty": .55}
-    model = {"schema_version": 2, "kind": "independent_category_random_forest", "model_id": uuid4().hex,
+        if algorithm == "random_forest":
+            forest = RandomForestClassifier(**parameters).fit(x, y[:, column])
+            classifiers[label] = {"trees": _export_forest(forest, 1), "threshold": .5, "minimum_certainty": .55}
+        else:
+            weights = compute_sample_weight("balanced", y[:, column])
+            estimator = GradientBoostingClassifier(**parameters).fit(x, y[:, column], sample_weight=weights)
+            classifiers[label] = _export_boosting(estimator)
+    model = {"schema_version": 2,
+             "kind": "independent_category_random_forest" if algorithm == "random_forest" else "independent_gradient_boosting",
+             "algorithm": algorithm, "hyperparameters": parameters, "sklearn_version": sklearn.__version__,
+             "sample_weighting": "balanced_subsample" if algorithm == "random_forest" else "balanced",
+             "model_id": uuid4().hex,
              "created_at": datetime.now(timezone.utc).isoformat(), "source_house_id": source_house_id,
              "labels": labels, "catalogue": catalogue, "feature_names": names,
+             "feature_schema_version": feature_schema_version,
+             "pir_context_training_samples": context_samples,
              "window_seconds": float(window_seconds), "classifiers": classifiers,
              "source_training_sessions": [session["session_id"] for session in training],
              "source_validation_sessions": [session["session_id"] for session in validation],
@@ -307,15 +410,44 @@ def train_source(sessions, source_house_id, *, window_seconds=600, seed=42):
              "source_observation_fingerprints": sorted(traces),
              "training_provenance": sorted({session.get("provenance", "human-labelled") for session in training}),
              "seed": seed, "training_samples": len(rows),
-             "confidence_note": "Forest vote probabilities are uncalibrated, including on another house."}
+             "confidence_note": "Model confidence is uncalibrated, including on another house."}
     validate_model(model)
     model["source_validation_metrics"] = _score(model, validation)
     model["source_test_metrics"] = _score(model, testing)
     return model
 
 
+def train_comparison(sessions, source_house_id, *, window_seconds=600, seed=42):
+    """Fit a reproducible pair with the same source-only split and inputs."""
+    models = {algorithm: train_source(sessions, source_house_id, window_seconds=window_seconds,
+                                     seed=seed, algorithm=algorithm) for algorithm in ALGORITHM_NAMES}
+    primary = models["random_forest"]
+    model = {field: copy.deepcopy(primary[field]) for field in _SHARED_FIELDS}
+    model.update(schema_version=3, kind=COMPARISON_KIND, model_id=uuid4().hex,
+                 feature_schema_version=primary["feature_schema_version"],
+                 pir_context_training_samples=primary["pir_context_training_samples"],
+                 created_at=datetime.now(timezone.utc).isoformat(), models=models,
+                 confidence_note="Both models have uncalibrated confidence; compare held-out labelled metrics.")
+    for field in ("source_validation_metrics", "source_test_metrics"):
+        model[field] = {"algorithms": {algorithm: child[field] for algorithm, child in models.items()}}
+    return validate_model(model)
+
+
 def evaluate_model(model, sessions):
     validate_model(model)
+    if model["kind"] == COMPARISON_KIND:
+        reports = {algorithm: evaluate_model(child, sessions) for algorithm, child in model["models"].items()}
+        return {"model_id": model["model_id"], "source_house_id": model["source_house_id"],
+                "kind": COMPARISON_KIND, "algorithms": reports,
+                "source_training_sessions": model["source_training_sessions"],
+                "source_validation_sessions": model["source_validation_sessions"],
+                "source_test_sessions": model["source_test_sessions"], "seed": model["seed"],
+                "window_seconds": model["window_seconds"], "training_samples": model["training_samples"],
+                "feature_schema_version": model.get("feature_schema_version", 1),
+                "pir_context_training_samples": model.get("pir_context_training_samples", 0),
+                "source_validation": {"algorithms": {
+                    algorithm: child["source_validation_metrics"] for algorithm, child in model["models"].items()}},
+                "note": "Paired source-only training; identical splits and inputs. Target data is evaluation only."}
     source_id = model["source_house_id"]
     target, source_test, ignored = [], [], []
     source_simulations = set(model.get("source_simulation_ids", []))
@@ -345,6 +477,8 @@ def evaluate_model(model, sessions):
             target.append(session)
     report = _score(model, target)
     report.update({"model_id": model["model_id"], "source_house_id": source_id,
+                   "feature_schema_version": model.get("feature_schema_version", 1),
+                   "pir_context_training_samples": model.get("pir_context_training_samples", 0),
                    "test_houses": len({session["house_id"] for session in target}),
                    "target_sessions": len(target), "excluded_source_sessions": ignored,
                    "target_independent_sessions": len({session.get("simulation_session_id", session["session_id"]) for session in target}),

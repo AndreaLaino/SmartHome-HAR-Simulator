@@ -1,9 +1,10 @@
 """Learned activity recognition, interval logging and simulation polling."""
 
 import logging
+from uuid import uuid4
 
 from house_state import HouseState
-from log import log_activity_start, log_activity_end, log_end_of_simulation
+from log import log_activity_start, log_activity_end, log_end_of_simulation, log_har_comparison
 
 
 logger = logging.getLogger(__name__)
@@ -60,15 +61,47 @@ def process_activities(
             "message": f"Recognition unavailable: {error}",
         }
     state["har_prediction"] = result
+    if result.get("comparisons"):
+        config = runtime_sources.get("har_config", {})
+        recording = house_state.values.get("har_recording")
+        try:
+            log_har_comparison(house_state, {
+                "time_seconds": timer_app_instance.elapsed_time.total_seconds() * 60,
+                "timestamp_sim": now, "house_id": config.get("house_id"),
+                "simulation_session_id": house_state.values.setdefault("har_simulation_id", uuid4().hex),
+                "comparison_model_id": result["comparison_model_id"], "model_ids": result["model_ids"],
+                "predictions": result["comparisons"],
+                "expected": recording["labels"] if recording else None,
+            })
+        except (OSError, ValueError) as error:
+            logger.warning("Unable to save HAR comparison: %s", error)
     detected = result.get("activities", []) if (
         result.get("status") == "partial" or (result.get("status") == "ready" and not result.get("abstained"))
     ) else []
     update_activity_state(now, detected, state, log_state)
     if activity_label is not None:
-        activity_label.config(text=_learned_activity_text(result))
+        show = getattr(type(activity_label), "show_prediction", None)
+        if callable(show):
+            show(activity_label, result)
+        else:
+            activity_label.config(text=_learned_activity_text(result))
+
+
+def reset_activity_display(activity_label):
+    if activity_label is not None:
+        reset = getattr(type(activity_label), "reset_prediction", None)
+        if callable(reset):
+            reset(activity_label)
+        else:
+            activity_label.config(text="Activity: None")
 
 
 def _learned_activity_text(result):
+    if result.get("comparisons"):
+        from har.learning import ALGORITHM_NAMES
+
+        return "\n\n".join(f"{name}:\n{_learned_activity_text(result['comparisons'][algorithm])}"
+                            for algorithm, name in ALGORITHM_NAMES.items())
     status = result.get("status")
     if status in {"ready", "partial", "uncertain"} and "activity_confidences" in result:
         confidences = result["activity_confidences"]
@@ -166,6 +199,6 @@ def close_current_activity(timer_app_instance, activity_label=None, house_state:
     current_activities.clear()
 
     if activity_label:
-        activity_label.config(text="Activity: None")
+        reset_activity_display(activity_label)
 
     log_end_of_simulation(now, log_state)

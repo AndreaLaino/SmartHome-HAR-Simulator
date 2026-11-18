@@ -17,8 +17,11 @@ from models import is_fixture
 
 
 def current_runtime(ctx):
-    from app.ui.device_inspector import current_devices, current_sensors
+    from app.ui.device_inspector import current_devices, current_sensors, current_walls, current_doors
+    sources = getattr(ctx, "_manual_runtime_sources", None)
+    walls = sources.get("walls", []) if isinstance(sources, dict) else current_walls(ctx)
     return {"devices": current_devices(ctx), "sensors": current_sensors(ctx),
+            "walls": walls, "doors": current_doors(ctx),
             "rooms": getattr(ctx, "rooms", []), "har_config": ctx.har_config}
 
 
@@ -65,6 +68,9 @@ def capture_frame(sensor_states, runtime, time_seconds, catalogue):
                 # Preserve failure/missing-sample information across save/replay.
                 observed[key] = []
         frame["sensor_states"][name] = observed
+    from har.pir_context import capture_context
+
+    frame["pir_context"] = capture_context(sensors, frame["devices"], runtime)
     return frame
 
 
@@ -153,12 +159,14 @@ def process_frame(sensor_states, runtime_sources, activity_state, now_seconds, *
         if inference is None or inference["model_id"] != model_id or inference.get("house_id") != house_id:
             model = validate_model(storage.load_model(model_id))
             inference = {"model_id": model_id, "house_id": house_id, "model": model,
-                         "encoder": FeatureEncoder(model["catalogue"], model["window_seconds"])}
+                         "encoder": FeatureEncoder(model["catalogue"], model["window_seconds"],
+                                                   schema_version=model.get("feature_schema_version", 1))}
             activity_state["har_inference"] = inference
         validate_catalogue_compatibility(inference["model"]["catalogue"], catalogue)
         encoder = inference["encoder"]
         if encoder.history and now < encoder.history[-1][0]:
-            encoder = FeatureEncoder(inference["model"]["catalogue"], inference["model"]["window_seconds"])
+            encoder = FeatureEncoder(inference["model"]["catalogue"], inference["model"]["window_seconds"],
+                                     schema_version=inference["model"].get("feature_schema_version", 1))
             inference["encoder"] = encoder
         result = predict_vector(inference["model"], encoder.update(frame))
     activity_state["har_prediction"] = result

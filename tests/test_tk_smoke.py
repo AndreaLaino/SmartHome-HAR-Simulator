@@ -193,12 +193,80 @@ class TkSmokeTests(unittest.TestCase):
                  "activity_confidences": {"eating": .52, "relaxing": .51}, "uncertain_activities": ["eating", "relaxing"]},
                 {"status": "no_model"},
             ):
-                label.configure(text=_learned_activity_text(result))
+                label.show_prediction(result)
                 self.pump()
                 self.assertGreater(label.winfo_width(), 1)
                 self.assertLessEqual(int(label.cget("wraplength")), label.winfo_width() - 8)
                 self.assertLessEqual(label.winfo_reqwidth(), label.winfo_width())
                 self.assertLessEqual(label.winfo_reqheight(), label.winfo_height())
+
+    def test_comparison_columns_fit_and_clear_on_model_change_and_reset(self):
+        from activity import reset_activity_display
+
+        self.load_home()
+        self.window.geometry("1480x900")
+        self.window.deiconify()
+        self.ctx.simulation_menu.invoke("Manual")
+        self.pump()
+        label = self.ctx.activity_label
+        rf = {"status": "partial", "activities": ["relaxing"], "abstained": True,
+              "activity_confidences": {"eating": .52, "relaxing": .9}, "uncertain_activities": ["eating"]}
+        gb = {"status": "ready", "activities": ["eating", "relaxing"],
+              "activity_confidences": {"eating": .8, "relaxing": .95}}
+        for panel_width in (420, 320):
+            self.ctx.activity_frame.master.configure(width=panel_width)
+            label.show_prediction({"comparisons": {"random_forest": rf, "gradient_boosting": gb}})
+            self.pump()
+            self.assertTrue(label.secondary.winfo_ismapped())
+            self.assertEqual([title.cget("text") for title in label.titles], ["Random Forest", "Gradient Boosting"])
+            self.assertLess(label.winfo_rootx(), label.secondary.winfo_rootx())
+            self.assertIn("Uncertain: eating", label.cget("text"))
+            self.assertIn("eating (80%)", label.secondary.cget("text"))
+            for widget in (label, label.secondary):
+                self.assertLessEqual(widget.winfo_reqwidth(), widget.winfo_width())
+                self.assertLessEqual(widget.winfo_reqheight(), widget.winfo_height())
+        reset_activity_display(label)
+        self.pump()
+        self.assertEqual(label.cget("text"), "Activity: None")
+        self.assertEqual(label.secondary.cget("text"), "Activity: None")
+        label.show_prediction({"status": "no_model"})
+        self.pump()
+        self.assertIn("no trained model", label.cget("text"))
+        self.assertIn("no trained model", label.secondary.cget("text"))
+        self.assertTrue(label.secondary.winfo_ismapped())
+        label.show_prediction(rf)
+        self.pump()
+        self.assertTrue(label.secondary.winfo_ismapped())
+        self.assertIn("Uncertain: eating", label.cget("text"))
+        self.assertIn("Activate the RF + Gradient Boosting comparison", label.secondary.cget("text"))
+        label.show_prediction({**gb, "algorithm": "gradient_boosting"})
+        self.pump()
+        self.assertIn("Activate the RF + Gradient Boosting comparison", label.cget("text"))
+        self.assertIn("eating (80%)", label.secondary.cget("text"))
+
+    def test_manual_mode_displays_both_saved_algorithms_from_live_observations(self):
+        from har.demo import demo_sessions
+        from har.learning import train_comparison
+
+        self.load_home()
+        self.window.geometry("1480x900")
+        self.window.deiconify()
+        model = train_comparison(demo_sessions(sessions_per_house=3), "demo-source")
+        har_storage.save_model(model)
+        self.ctx.har_config["model_id"] = model["model_id"]
+        self.ctx.simulation_menu.invoke("Manual")
+        self.pump()
+        self.ctx.timer_app_instance.start_stop_button.invoke()
+        self.pump()
+        label = self.ctx.activity_label
+        predictions = self.ctx.house_state.activity_state()["har_prediction"]["comparisons"]
+        from activity import _learned_activity_text
+
+        self.assertEqual(label.cget("text"), _learned_activity_text(predictions["random_forest"]))
+        self.assertEqual(label.secondary.cget("text"), _learned_activity_text(predictions["gradient_boosting"]))
+        self.assertTrue(label.winfo_ismapped())
+        self.assertTrue(label.secondary.winfo_ismapped())
+        self.assertNotIn("No prediction", label.secondary.cget("text"))
 
     def open_training_panel(self):
         self.window.geometry("1480x900")
@@ -1336,6 +1404,44 @@ class TkSmokeTests(unittest.TestCase):
         with patch.object(scenario.messagebox, "showinfo"):
             self.assertTrue(scenario._write_scenario(self.ctx, path))
         self.assertIn("Fixtures", path.read_text(encoding="utf-8"))
+
+    def test_recording_freezes_pir_object_coverage_and_door_visibility(self):
+        import json
+
+        from activity import process_activities
+        from har.runtime import start_recording, finish_recording
+
+        self.load_home()
+        self.ctx.read_devices[:] = [Device("oven", 80, 100, "Oven", 1000, 0, 0, 1000),
+                                    Fixture("sofa", 160, 100, "Sofa")]
+        self.ctx.read_sensors[:] = [Sensor("left", 100, 100, "PIR", 0, 1, 1, 0, direction=180),
+                                    Sensor("right", 140, 100, "PIR", 0, 1, 1, 0, direction=0)]
+        _redraw_editable_objects(self.ctx)
+        self.ctx.simulation_menu.invoke("Manual")
+        self.pump()
+        session = start_recording(self.ctx, "source")
+        timer = self.ctx.timer_app_instance
+        timer.start_stop_button.invoke()
+        self.pump()
+        runtime = self.ctx._manual_runtime_sources
+
+        def observe():
+            timer.elapsed_time += timedelta(seconds=1)
+            process_activities(self.ctx.activity_label, timer, self.ctx.house_state.sensor_states(),
+                               self.ctx.house_state, runtime)
+            return session["frames"][-1]["pir_context"]["coverage"]
+
+        self.assertEqual(observe(), {"left": ["Device_Cooking"], "right": ["Device_Seating"]})
+        closed_door = Door(150, 50, 150, 150, "close")
+        runtime["doors"].append(closed_door)
+        self.assertEqual(observe(), {"left": ["Device_Cooking"], "right": []})
+        closed_snapshot = copy.deepcopy(session["frames"][-1])
+        closed_door.state = "open"
+        self.assertEqual(observe(), {"left": ["Device_Cooking"], "right": ["Device_Seating"]})
+        path = finish_recording(self.ctx.house_state)
+        saved = har_storage.read_json(path)
+        self.assertIn(json.loads(json.dumps(closed_snapshot)), saved["frames"])
+        self.assertEqual(saved["frames"][-1]["pir_context"]["coverage"]["right"], ["Device_Seating"])
 
     def test_target_model_records_full_advances_and_restarts_recording_after_reset(self):
         from app.ui.learned_har import LearnedHARWindow

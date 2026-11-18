@@ -1,7 +1,9 @@
 """UI workflow checks; real Tk tests opt in with SIMULATOR_GUI_TESTS=1."""
 from copy import deepcopy
+from datetime import datetime, timezone
 import os
 from pathlib import Path
+from types import SimpleNamespace
 import tempfile
 import threading
 import time
@@ -10,12 +12,57 @@ import unittest
 from unittest.mock import patch
 
 from app.context import AppContext
-from app.ui.learned_har import LearnedHARWindow, format_evaluation, model_display_names, parse_labels
+from app.ui.learned_har import (
+    LearnedHARWindow, ModelNameDialog, format_evaluation, model_display_names,
+    parse_labels, suggested_model_name, training_house_name, validate_model_name,
+)
 from har import catalogue, storage
 from models import Device, Sensor
 
 
 class LearnedHARPresentationTests(unittest.TestCase):
+    def test_suggested_model_name_leaves_the_suffix_for_the_user(self):
+        now = datetime(2026, 11, 18, 12, tzinfo=timezone.utc)
+        self.assertEqual(suggested_model_name("  Casa   A  ", "3c5e83fe325946de", now=now), "Casa_A_[3c5e83fe]_2026-11-18_")
+        self.assertEqual(suggested_model_name("  ", "another-house", now=now), "House_[another-]_2026-11-18_")
+
+    def test_current_source_uses_scenario_name_when_har_label_is_still_house(self):
+        ctx = SimpleNamespace(har_config={"house_id": "source", "house_label": "House"}, current_file="/saved/Casa_A.csv")
+        sessions = [{"house_id": "source", "house_label": "House", "partition": "source"}]
+        self.assertEqual(training_house_name(ctx, sessions, "source", edited_name="House"), "Casa_A")
+        self.assertEqual(training_house_name(ctx, sessions, "source", edited_name="Casa rinominata"), "Casa rinominata")
+        ctx.har_config["house_label"] = "Explicit name"
+        self.assertEqual(training_house_name(ctx, sessions, "source"), "Explicit name")
+
+    def test_open_target_name_and_id_do_not_replace_the_selected_source(self):
+        ctx = SimpleNamespace(har_config={"house_id": "target", "house_label": "Casa_B"}, current_file="/saved/Casa_B.csv")
+        sessions = [{"house_id": "source", "house_label": "Casa_A", "partition": "source"},
+                    {"house_id": "target", "house_label": "Casa_B", "partition": "target"}]
+        self.assertEqual(training_house_name(ctx, sessions, "source", edited_name="Casa_B"), "Casa_A")
+        sessions[0]["house_label"] = "House"
+        self.assertEqual(training_house_name(ctx, sessions, "source", edited_name="Casa_B"), "House")
+
+    def test_custom_recorded_source_name_takes_priority_over_generic_current_label(self):
+        ctx = SimpleNamespace(har_config={"house_id": "source", "house_label": "House"}, current_file="/saved/Copy.csv")
+        sessions = [{"house_id": "source", "house_label": "Casa_A", "partition": "source"}]
+        self.assertEqual(training_house_name(ctx, sessions, "source", edited_name="House"), "Casa_A")
+
+    def test_custom_names_are_free_text_and_empty_or_duplicate_names_are_rejected(self):
+        self.assertEqual(validate_model_name("  Prova caffè / PIR  "), "Prova caffè / PIR")
+        for value in (None, "", "  ", "two\nlines", "null\0character", "Existing"):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                validate_model_name(value, ["Existing"])
+
+    def test_plain_activity_label_formats_each_comparison_result_separately(self):
+        from activity import _learned_activity_text
+
+        text = _learned_activity_text({"comparisons": {
+            "random_forest": {"status": "ready", "activities": ["cooking"], "confidence": .9},
+            "gradient_boosting": {"status": "ready", "activities": ["relaxing"], "confidence": .8},
+        }})
+        self.assertIn("Random Forest:\nActivities (ML): cooking\nModel confidence: 90%", text)
+        self.assertIn("Gradient Boosting:\nActivities (ML): relaxing\nModel confidence: 80%", text)
+
     def test_labels_are_multiple_observed_activities(self):
         self.assertEqual(parse_labels(" cooking, relaxing, cooking,  "), ["cooking", "relaxing"])
         self.assertEqual(parse_labels(""), [])
@@ -93,6 +140,14 @@ class LearnedHARPresentationTests(unittest.TestCase):
         self.assertIn("cooking: precision 100.0%", text)
         self.assertIn("coverage 80.0%", text)
         self.assertIn("Source sessions excluded: 3", text)
+
+    def test_comparison_report_names_both_algorithms_and_includes_f1_and_coverage(self):
+        scores = {"labelled_samples": 10, "micro_f1": .8, "macro_f1": .7, "coverage": .9}
+        text = format_evaluation({"algorithms": {"random_forest": scores, "gradient_boosting": scores}})
+        self.assertIn("Random Forest:\n", text)
+        self.assertIn("Gradient Boosting:\n", text)
+        self.assertEqual(text.count("Macro F1: 70.0%"), 2)
+        self.assertEqual(text.count("Coverage (all activities decided): 90.0%"), 2)
         self.assertIn("Record labelled target sessions", format_evaluation({"labelled_samples": 0}))
         self.assertIn("SYNTHETIC DEMONSTRATION", format_evaluation({"labelled_samples": 10, "scope": "synthetic"}))
 
@@ -103,6 +158,7 @@ class LearnedHARWindowTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.addCleanup(patch.stopall)
+        self.ask_name = patch("app.ui.learned_har.ask_model_name", return_value="My test model").start()
         patch.object(storage, "DATA_DIR", Path(self.temp.name)).start()
         try:
             self.root = tk.Tk()
@@ -130,6 +186,75 @@ class LearnedHARWindowTests(unittest.TestCase):
         self.root.update_idletasks()
         self.root.update()
         self.assertEqual(self.errors, [])
+
+    def interact_with_name_dialog(self, callback, *, existing_names=()):
+        def interact():
+            dialog = next(child for child in self.ui.window.winfo_children() if isinstance(child, ModelNameDialog))
+            try:
+                callback(dialog)
+            finally:
+                if dialog.winfo_exists():
+                    dialog.cancel()
+
+        self.ui.window.after(50, interact)
+        result = ModelNameDialog(self.ui.window, "Source_[3c5e83fe]_2026-11-18_", existing_names).result
+        self.pump()
+        return result
+
+    def test_name_dialog_appends_at_the_end_and_allows_replacing_everything(self):
+        def append(dialog):
+            self.assertEqual(dialog.entry.get(), "Source_[3c5e83fe]_2026-11-18_")
+            self.assertEqual(dialog.entry.index(tk.INSERT), len(dialog.entry.get()))
+            self.assertFalse(dialog.entry.selection_present())
+            dialog.entry.insert(tk.INSERT, "PIR")
+            dialog.ok()
+        self.assertEqual(self.interact_with_name_dialog(append), "Source_[3c5e83fe]_2026-11-18_PIR")
+
+        def replace(dialog):
+            dialog.entry.delete(0, tk.END)
+            dialog.entry.insert(0, "Completely custom name")
+            dialog.ok()
+        self.assertEqual(self.interact_with_name_dialog(replace), "Completely custom name")
+
+    def test_name_dialog_keeps_invalid_names_editable_and_supports_cancel(self):
+        def correct(dialog):
+            dialog.name.set(" ")
+            dialog.ok()
+            self.assertTrue(dialog.winfo_exists())
+            self.assertIn("Enter a model name", dialog.error.get())
+            dialog.name.set("Existing")
+            dialog.ok()
+            self.assertIn("already uses", dialog.error.get())
+            dialog.name.set("New name")
+            dialog.ok()
+        self.assertEqual(self.interact_with_name_dialog(correct, existing_names=["Existing"]), "New name")
+        self.assertIsNone(self.interact_with_name_dialog(lambda dialog: dialog.cancel()))
+
+    def test_cancelled_name_does_not_start_training_or_write_files(self):
+        self.ui.source_houses = {"Source": "source_house"}
+        self.ui.source.set("Source")
+        self.ask_name.return_value = None
+        with patch.object(self.ui, "_run_worker") as worker, \
+                patch.object(storage, "list_sessions") as read_sessions, patch.object(storage, "save_model") as save:
+            self.ui.train()
+        worker.assert_not_called()
+        read_sessions.assert_not_called()
+        save.assert_not_called()
+        self.assertIn("cancelled", self.ui.status.get())
+
+    def test_model_name_suggestion_uses_current_house_file_and_persistent_house_id(self):
+        identifier = "3c5e83fe325946de83e6bf21437dca9d"
+        self.ctx.har_config.update(house_id=identifier, house_label="House")
+        self.ctx.current_file = str(Path(self.temp.name) / "Casa_A.csv")
+        self.ui.house_name.set("House")
+        self.ui.sessions = [{"house_id": identifier, "house_label": "House", "partition": "source"}]
+        self.ui.source_houses = {"House": identifier}
+        self.ui.source.set("House")
+        self.ask_name.return_value = None
+        self.ui.train()
+        self.assertRegex(self.ask_name.call_args.kwargs["initial_name"], r"^Casa_A_\[3c5e83fe\]_\d{4}-\d{2}-\d{2}_$")
+        self.assertEqual(self.ctx.har_config["house_id"], identifier)
+        self.assertFalse(self.ui._busy)
 
     def select_object(self, name):
         key = next(key for key, (_, obj) in self.ui.objects.items() if obj.name == name)
@@ -315,6 +440,7 @@ class LearnedHARWindowTests(unittest.TestCase):
         self.assertEqual(str(self.ui.stop_button.cget("state")), "disabled")
 
     def test_real_source_training_target_evaluation_and_activation(self):
+        self.ask_name.return_value = "My entirely custom comparison"
         dictionary = catalogue.load_catalogue()
         self.ctx.har_config.update(house_id="target_house", house_label="Target")
         for index in range(4):
@@ -355,9 +481,17 @@ class LearnedHARWindowTests(unittest.TestCase):
         self.assertIn("Labelled test observations: 12", self.ui.report_text.get("1.0", tk.END))
         self.ui.activate_model()
         model = storage.load_model(self.ctx.har_config["model_id"])
+        self.assertEqual(model["kind"], "activity_model_comparison")
+        self.assertEqual(set(model["models"]), {"random_forest", "gradient_boosting"})
+        for name in ("Random Forest", "Gradient Boosting"):
+            self.assertIn(name, self.ui.report_text.get("1.0", tk.END))
+        self.assertIn("Source validation (model comparison)", self.ui.report_text.get("1.0", tk.END))
+        self.assertIn("PIR object context observed in 0/", self.ui.report_text.get("1.0", tk.END))
+        self.assertIn("Record new sessions", self.ui.report_text.get("1.0", tk.END))
         self.assertEqual(model["source_house_id"], "source_house")
         self.assertEqual(model["source_house_label"], "Source")
-        self.assertRegex(model["display_name"], r"^Source_\d{4}-\d{2}-\d{2}_001$")
+        self.assertEqual(model["display_name"], "My entirely custom comparison")
+        self.assertRegex(self.ask_name.call_args.kwargs["initial_name"], r"^Source_\[source_h\]_\d{4}-\d{2}-\d{2}_$")
         self.assertIn(model["display_name"], self.ui.model_status.get())
         self.assertEqual(self.ui.model_choices[self.ui.model.get()], model["model_id"])
         self.assertTrue((storage.DATA_DIR / "models" / f"{model['model_id']}.json").is_file())

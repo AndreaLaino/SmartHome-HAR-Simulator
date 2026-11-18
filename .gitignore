@@ -109,3 +109,6 @@ devices/dht_t2.csv
 
 # Output for visual representation
 /outputs/
+
+# Theory of the project
+/theory/
